@@ -1,0 +1,129 @@
+# video-finder
+
+Search YouTube for music-video-style results, download with [yt-dlp](https://github.com/yt-dlp/yt-dlp), and transcode with **ffmpeg** to **H.264 / AAC MP4** tuned for **Audi USB “music interface”** limits (and similar MMI/MHI2-style players).
+
+## Requirements
+
+- **Python** 3.11+
+- **ffmpeg** on your `PATH` (with libx264, aac, and optionally VAAPI/NVENC for hardware encode)
+- **yt-dlp** is installed automatically as a Python dependency (CLI `yt-dlp` is also available via the same package)
+
+Install ffmpeg on Arch:
+
+```bash
+sudo pacman -S ffmpeg
+```
+
+## Install
+
+Use a virtual environment (recommended on Arch and other PEP 668–managed Pythons):
+
+```bash
+cd /path/to/video-finder
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+## Config
+
+Optional file: `$XDG_CONFIG_HOME/video-finder/config.toml` (default: `~/.config/video-finder/config.toml`).
+
+Defaults already match **Audi’s published USB video limits** (see below). Override only if your car plays higher specs or for home use.
+
+```toml
+# Audi USB video: max 720x576, 25 fps, video <= 2000 kbit/s
+max_width = 720
+max_height = 576
+fps = "25"
+video_bitrate_k = 1800
+video_bitrate_peak_k = 2000
+audio_bitrate_k = 320
+audio_sample_rate = 48000
+h264_profile = "baseline"
+h264_level = "3.1"
+preset = "medium"
+# h264_tune = "zerolatency"
+# ffmpeg_threads = 8
+# Optional: NVIDIA — may produce streams some cars dislike; prefer libx264 if USB playback fails.
+# video_encoder = "h264_nvenc"
+# nvenc_preset = "p1"
+# Optional: Intel/AMD VAAPI (e.g. /dev/dri/renderD128). baseline → ffmpeg -profile:v 578 (constrained_baseline).
+# video_encoder = "h264_vaapi"
+# vaapi_device = "/dev/dri/renderD128"
+# vaapi_profile = 0   # 0 = from h264_profile; or set e.g. 77 (main), 100 (high)
+# vaapi_cbr = true    # VAAPI constant bitrate (rc_mode 2); set false if you prefer encoder default RC
+scale_flags = "bicubic"
+raw_cache_dir = "~/.cache/video-finder/raw"
+output_dir = "~/Videos/video-finder"
+# Embed title / artist / album (from yt-dlp) and highest-res thumbnail as MP4 album art.
+embed_metadata = true
+embed_album_art = true
+```
+
+To **lift limits** for a TV or PC (not the car), raise `max_width` / `max_height`, `fps`, `video_bitrate_k`, and `video_bitrate_peak_k` (or set `video_bitrate_peak_k = 0` to disable the peak cap).
+
+Environment variables override the same keys when prefixed with `VIDEO_FINDER_`.
+
+By default, finished MP4s go under **`~/Videos/video-finder`**. Before each download/transcode, the tool **creates the output folder immediately** and prints `Output folder (ready): /absolute/path` on stderr.
+
+## Audi USB / music interface (official limits)
+
+For **MPEG-4 AVC (H.264)** in `.mp4` / `.m4v` / `.mov` / `.avi` on USB, Audi documents:
+
+| Constraint | Maximum |
+|------------|---------|
+| Resolution | **720 x 576** px |
+| Frame rate | **25** fps |
+| Video bitrate | **2,000** kbit/s |
+
+**Audio:** up to **320 kbit/s**, **48 kHz** (AAC `.m4a` / `.aac` is supported).
+
+**Media:** USB 2.0 mass storage; file systems **FAT, FAT32, or NTFS**; **at most two partitions** on the USB device.
+
+The tool’s defaults respect the video table and use **AAC-LC** stereo at 48 kHz / 320 kb/s. If the car still skips files, try **exFAT→FAT32**, fewer files per folder, and **libx264** (not NVENC).
+
+**Picture quality and smooth playback:** At a fixed video bitrate (e.g. 1800 kbit/s under a 2000 peak cap), **slower `libx264` presets** pack more detail than `veryfast` / `ultrafast`. **VAAPI** is faster but often looks softer or less stable than **libx264** at the same numbers; for “best USB copy,” keep **`video_encoder` unset** (libx264) and use **`preset = "medium"`** or **`slow`** if encode time is fine. **VAAPI** defaults include **`vaapi_cbr = true`** (CBR) to reduce bitrate swings that some head units decode unevenly; if motion still looks uneven, try **`libx264`** for that job.
+
+## Usage
+
+```bash
+video-finder search "daft punk harder better"
+video-finder search --artist "Daft Punk" --title "Harder Better Faster"
+video-finder channel "@daftpunk"
+video-finder download "https://www.youtube.com/watch?v=..." -o ./out.mp4
+video-finder convert ./input.mkv -o ./out.mp4
+video-finder get "artist song"
+video-finder get "artist song" --auto-first
+video-finder get "artist song" --subdir my-album
+video-finder interactive
+video-finder interactive --subdir my-picks
+video-finder get "artist song" --no-embed   # transcode only; no tags or embedded art
+export YOUTUBE_API_KEY=...
+video-finder search "query" --use-youtube-api
+```
+
+### Faster encodes
+
+**Biggest wins (already supported)**
+
+- **`preset = "veryfast"`** or **`"ultrafast"`** — faster **libx264** encodes with a bit less quality at the same target bitrate than the default **`medium`**.
+- **`video_encoder = "h264_nvenc"`** — **NVIDIA GPU** encode is usually much faster than CPU; keep **libx264** if the car rejects NVENC files.
+
+**Smaller tweaks (optional in `config.toml`)**
+
+- **`h264_tune = "zerolatency"`** — tiny **libx264** speed-up, slightly worse compression.
+- **`ffmpeg_threads = 8`** (or your core count) — sometimes helps if ffmpeg/x264 under-uses CPU; **`0`** leaves the default (often fine).
+
+**Outside this tool**
+
+- **Two encodes at once** — run a second terminal and convert another file in parallel (watch CPU thermals).
+- **Hardware decode** — advanced: run your own `ffmpeg` with **`-hwaccel cuda`** / **`-hwaccel vaapi`** before `-i` to speed decoding when you still CPU-encode; not wired into `video-finder` today.
+- **Power / thermals** — laptop on AC + performance mode avoids throttling mid-encode.
+- **Shorter pipeline** — you’re already downscaling to **720×576**; there’s little left to skip without breaking Audi limits.
+
+In **`video-finder interactive`**, each finished **MP4 path is printed to stdout** as that encode completes; progress goes to stderr.
+
+## Legal
+
+Use only for content you are allowed to download. YouTube’s terms apply.
