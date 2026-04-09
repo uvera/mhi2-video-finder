@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer
@@ -57,6 +58,7 @@ class MainWindow(QWidget):
         self._job_order: list[str] = []
 
         self._search_worker: SearchWorker | None = None
+        self._search_seq: int = 0
         self._tray: QSystemTrayIcon | None = None
         if QSystemTrayIcon.isSystemTrayAvailable():
             self._tray = QSystemTrayIcon(self)
@@ -276,10 +278,12 @@ class MainWindow(QWidget):
         self.source_combo = QComboBox()
         self.source_combo.addItems(["Search term", "Channel", "Playlist", "Video URL"])
         self.source_combo.currentIndexChanged.connect(self._update_source_widgets)
+        self.source_combo.currentIndexChanged.connect(self._on_search_inputs_changed)
         src_grid.addWidget(QLabel("Type:"), 0, 0)
         src_grid.addWidget(self.source_combo, 0, 1)
         self.query_edit = QLineEdit()
         self.query_edit.setPlaceholderText("Query, @channel, channel / playlist URL, or single video URL")
+        self.query_edit.textChanged.connect(self._on_search_inputs_changed)
         src_grid.addWidget(QLabel("Input:"), 1, 0)
         src_grid.addWidget(self.query_edit, 1, 1)
         self.use_api_cb = QCheckBox("Use YouTube Data API (needs API key)")
@@ -287,8 +291,10 @@ class MainWindow(QWidget):
         src_grid.addWidget(self.use_api_cb, 2, 0, 1, 2)
         self.artist_edit = QLineEdit()
         self.artist_edit.setPlaceholderText("Artist (optional; with API or template)")
+        self.artist_edit.textChanged.connect(self._on_search_inputs_changed)
         self.title_edit = QLineEdit()
         self.title_edit.setPlaceholderText("Song title (optional)")
+        self.title_edit.textChanged.connect(self._on_search_inputs_changed)
         src_grid.addWidget(QLabel("Artist:"), 3, 0)
         src_grid.addWidget(self.artist_edit, 3, 1)
         src_grid.addWidget(QLabel("Title:"), 4, 0)
@@ -447,9 +453,14 @@ class MainWindow(QWidget):
         v = self.limit_spin.value()
         return None if v == 0 else v
 
-    def _start_search(self) -> None:
-        if self._search_worker and self._search_worker.isRunning():
+    def _on_search_inputs_changed(self) -> None:
+        if not (self._search_worker and self._search_worker.isRunning()):
             return
+        self._search_seq += 1
+        self.search_btn.setEnabled(True)
+        self._search_worker.requestInterruption()
+
+    def _start_search(self) -> None:
         q = self.query_edit.text().strip()
         idx = self.source_combo.currentIndex()
         mode = ("search", "channel", "playlist", "video_url")[idx]
@@ -466,6 +477,11 @@ class MainWindow(QWidget):
             QMessageBox.warning(self, "API", "Set YOUTUBE_API_KEY or youtube_api_key in config for API search.")
             return
 
+        if self._search_worker and self._search_worker.isRunning():
+            self._search_worker.requestInterruption()
+
+        self._search_seq += 1
+        run_seq = self._search_seq
         self.search_btn.setEnabled(False)
         self._search_worker = SearchWorker(
             mode=mode,
@@ -478,18 +494,24 @@ class MainWindow(QWidget):
             limit=self._limit_value(),
             parent=self,
         )
-        self._search_worker.finished_ok.connect(self._search_finished)
-        self._search_worker.failed.connect(self._search_failed)
+        self._search_worker.finished_ok.connect(partial(self._search_finished, _seq=run_seq))
+        self._search_worker.failed.connect(partial(self._search_failed, _seq=run_seq))
         self._search_worker.finished.connect(self._search_thread_done)
         self._search_worker.start()
 
     def _search_thread_done(self) -> None:
+        worker = self.sender()
+        if worker is not self._search_worker:
+            if isinstance(worker, SearchWorker):
+                worker.deleteLater()
+            return
         self.search_btn.setEnabled(True)
-        if self._search_worker:
-            self._search_worker.deleteLater()
-            self._search_worker = None
+        self._search_worker.deleteLater()
+        self._search_worker = None
 
-    def _search_finished(self, rows: list) -> None:
+    def _search_finished(self, rows: list, *, _seq: int) -> None:
+        if _seq != self._search_seq:
+            return
         self._results = list(rows)
         self.results_table.setRowCount(0)
         from video_finder.workflow import fmt_duration
@@ -505,7 +527,9 @@ class MainWindow(QWidget):
             self.results_table.setItem(i, 3, QTableWidgetItem(fmt_duration(c.duration)))
             self.results_table.setItem(i, 4, QTableWidgetItem(c.url))
 
-    def _search_failed(self, msg: str) -> None:
+    def _search_failed(self, msg: str, *, _seq: int) -> None:
+        if _seq != self._search_seq:
+            return
         QMessageBox.critical(self, "Search failed", msg)
 
     def _deselect_result_checkboxes(self) -> None:

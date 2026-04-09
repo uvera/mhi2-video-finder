@@ -51,6 +51,9 @@ class SearchWorker(QThread):
             from video_finder.search import list_channel_videos, list_playlist_videos, video_from_url
             from video_finder.workflow import gather_search_rows
 
+            if self.isInterruptionRequested():
+                return
+
             mf = self._settings.match_filter
             n = self._limit
             if self._mode == "channel":
@@ -95,8 +98,12 @@ class SearchWorker(QThread):
                     template=self._template,
                     channel_id=None,
                 )
+            if self.isInterruptionRequested():
+                return
             self.finished_ok.emit(rows)
         except Exception as e:
+            if self.isInterruptionRequested():
+                return
             self.failed.emit(str(e))
 
 
