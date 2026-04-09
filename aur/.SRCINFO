@@ -1,0 +1,21 @@
+pkgbase = video-finder
+	pkgdesc = YouTube music-video search, download (yt-dlp), and MHI2-oriented MP4 transcode
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/YOUR_GITHUB_USER/video-finder
+	install = video-finder.install
+	arch = any
+	license = MIT
+	makedepends = python-build
+	makedepends = python-installer
+	makedepends = python-setuptools
+	makedepends = python-wheel
+	depends = python
+	depends = ffmpeg
+	depends = python-pyqt6
+	depends = python-typer
+	depends = yt-dlp
+	source = video-finder-0.1.0.tar.gz::https://github.com/YOUR_GITHUB_USER/video-finder/archive/refs/tags/v0.1.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = video-finder

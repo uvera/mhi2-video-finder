@@ -74,14 +74,46 @@ def _ydl_opts_base(
     return opts
 
 
+def _yt_dlp_search_url(query: str, limit: int | None) -> str:
+    """ytsearchall: pages until YouTube stops returning continuations; limit N caps to N results."""
+    if limit is None:
+        return f"ytsearchall:{query}"
+    return f"ytsearch{max(1, limit)}:{query}"
+
+
 def search_youtube(
     query: str,
     *,
-    limit: int = 15,
+    limit: int | None = 15,
     match_filter: str | None = None,
 ) -> list[VideoCandidate]:
-    url = f"ytsearch{max(1, limit)}:{query}"
+    url = _yt_dlp_search_url(query, limit)
     opts = _ydl_opts_base(match_filter=match_filter)
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+    entries = (info or {}).get("entries") or []
+    out: list[VideoCandidate] = []
+    for e in entries:
+        if not e:
+            continue
+        c = _entry_to_candidate(e)
+        if c:
+            out.append(c)
+    return out
+
+
+def list_playlist_videos(
+    playlist_url: str,
+    *,
+    limit: int | None = 20,
+    match_filter: str | None = None,
+) -> list[VideoCandidate]:
+    """List videos from a YouTube playlist URL (or any URL yt-dlp treats as a playlist)."""
+    url = playlist_url.strip()
+    opts = _ydl_opts_base(
+        playlistend=limit if limit is not None else None,
+        match_filter=match_filter,
+    )
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
     entries = (info or {}).get("entries") or []
@@ -98,11 +130,14 @@ def search_youtube(
 def list_channel_videos(
     channel: str,
     *,
-    limit: int = 20,
+    limit: int | None = 20,
     match_filter: str | None = None,
 ) -> list[VideoCandidate]:
     url = _normalize_channel_videos_url(channel)
-    opts = _ydl_opts_base(playlistend=limit, match_filter=match_filter)
+    opts = _ydl_opts_base(
+        playlistend=limit if limit is not None else None,
+        match_filter=match_filter,
+    )
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
     entries = (info or {}).get("entries") or []

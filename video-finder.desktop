@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=video-finder
+GenericName=YouTube to USB-ready MP4
+Comment=Search YouTube, download with yt-dlp, transcode for car USB players
+Exec=video-finder-ui
+Icon=multimedia-player
+Terminal=false
+Categories=AudioVideo;Video;Network;
+Keywords=youtube;music;video;ffmpeg;yt-dlp;transcode;
+StartupNotify=true

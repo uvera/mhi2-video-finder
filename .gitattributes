@@ -1,0 +1,3 @@
+# Excluded from GitHub export archives so tag tarball checksum stays stable when only
+# aur/PKGBUILD and aur/.SRCINFO change (see scripts/release-github-aur.sh).
+aur/ export-ignore

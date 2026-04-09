@@ -1,6 +1,12 @@
 """Tests for query formatting."""
 
-from video_finder.search import format_mv_query
+from video_finder.search import _yt_dlp_search_url, format_mv_query
+
+
+def test_yt_dlp_search_url_limited_and_unlimited() -> None:
+    assert _yt_dlp_search_url("hello world", 15) == "ytsearch15:hello world"
+    assert _yt_dlp_search_url("hello world", 1) == "ytsearch1:hello world"
+    assert _yt_dlp_search_url("hello world", None) == "ytsearchall:hello world"
 
 
 def test_format_mv_query_with_title() -> None:

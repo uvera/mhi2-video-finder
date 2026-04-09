@@ -18,12 +18,19 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
 ]
+gui = [
+    "PyQt6>=6.6.0",
+]
 
 [project.scripts]
 video-finder = "video_finder.cli:app"
+video-finder-ui = "video_finder.ui.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.data-files]
+"share/applications" = ["video-finder.desktop"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

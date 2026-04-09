@@ -25,6 +25,18 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+### Graphical UI (PyQt6)
+
+The GUI adds a **Search** tab (search term, channel `/videos`, or playlist URL), multi-select to **queue downloads**, a **Downloads** tab with yt-dlp progress, and a **Convert** tab with ffmpeg encode progress (percent from stream duration when known).
+
+```bash
+pip install -e ".[gui]"    # or pip install "video-finder[gui]"
+video-finder-ui
+video-finder-ui --config /path/to/config.toml
+```
+
+A `.desktop` entry is installed as `video-finder` (launches `video-finder-ui`) when you install from the wheel.
+
 ## Config
 
 Optional file: `$XDG_CONFIG_HOME/video-finder/config.toml` (default: `~/.config/video-finder/config.toml`).
@@ -91,6 +103,7 @@ The tool’s defaults respect the video table and use **AAC-LC** stereo at 48 kH
 video-finder search "daft punk harder better"
 video-finder search --artist "Daft Punk" --title "Harder Better Faster"
 video-finder channel "@daftpunk"
+video-finder playlist "https://www.youtube.com/playlist?list=..."
 video-finder download "https://www.youtube.com/watch?v=..." -o ./out.mp4
 video-finder convert ./input.mkv -o ./out.mp4
 video-finder get "artist song"
@@ -123,6 +136,14 @@ video-finder search "query" --use-youtube-api
 - **Shorter pipeline** — you’re already downscaling to **720×576**; there’s little left to skip without breaking Audi limits.
 
 In **`video-finder interactive`**, each finished **MP4 path is printed to stdout** as that encode completes; progress goes to stderr.
+
+## Arch Linux packaging (AUR)
+
+Upstream ships an AUR-style recipe under [`aur/`](aur/):
+
+- Edit [`aur/PKGBUILD`](aur/PKGBUILD): set `url=` and `source=` to your real GitHub repo (replace `YOUR_GITHUB_USER`), then run `makepkg --printsrcinfo > aur/.SRCINFO` (or use Docker as in the script below).
+- [`scripts/release-github-aur.sh`](scripts/release-github-aur.sh) — after `gh auth login`, pushes tag `v<version>`, downloads the **GitHub** tag tarball, writes `sha256sums` into `aur/PKGBUILD`, regenerates `aur/.SRCINFO`, and can create a GitHub release. The repo uses [`.gitattributes`](.gitattributes) `aur/ export-ignore` so the tag archive hash stays stable when only AUR metadata changes (same idea as [hikvision-viewer](https://github.com/uvera/hikvision-viewer)).
+- [`scripts/package-release.sh`](scripts/package-release.sh) — local `python -m build` (wheel + sdist) only.
 
 ## Legal
 

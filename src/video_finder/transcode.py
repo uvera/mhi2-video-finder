@@ -6,9 +6,11 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from video_finder.config import Settings, build_ffmpeg_command
+from video_finder.ffmpeg_progress import ffprobe_duration_ms, run_ffmpeg_with_progress
 from video_finder.metadata import (
     attach_album_art_to_mp4,
     best_thumbnail_url,
@@ -23,6 +25,7 @@ def transcode(
     settings: Settings,
     *,
     ytdlp_info: dict[str, Any] | None = None,
+    on_encode_progress: Callable[[float | None], None] | None = None,
 ) -> None:
     output_path = output_path.resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,7 +63,11 @@ def transcode(
             settings,
             metadata_args=metadata_args,
         )
-        subprocess.run(cmd, check=True)
+        if on_encode_progress is not None:
+            dur_ms = ffprobe_duration_ms(input_path.resolve())
+            run_ffmpeg_with_progress(cmd, duration_ms=dur_ms, on_progress=on_encode_progress)
+        else:
+            subprocess.run(cmd, check=True)
         if cover_path is not None:
             assert tmp_encode is not None
             try:

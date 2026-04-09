@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 import yt_dlp
@@ -20,20 +21,32 @@ def normalize_watch_url(url_or_id: str) -> str:
     return s
 
 
-def download_to_cache(url_or_id: str, cache_dir: Path) -> tuple[Path, dict[str, Any]]:
-    """Download best video+audio merged to MKV; return path and yt-dlp info dict (for tags / thumbnails)."""
+def download_to_cache(
+    url_or_id: str,
+    cache_dir: Path,
+    *,
+    progress_hooks: list[Callable[[dict[str, Any]], None]] | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    """Download best video+audio merged to MKV; return path and yt-dlp info dict (for tags / thumbnails).
+
+    When ``progress_hooks`` is set, terminal spam is suppressed (quiet mode) and hooks receive yt-dlp
+    progress dicts (see yt-dlp ``progress_hooks`` documentation).
+    """
     cache_dir.mkdir(parents=True, exist_ok=True)
     url = normalize_watch_url(url_or_id)
 
     outtmpl = str(cache_dir / "%(id)s.%(ext)s")
+    use_hooks = bool(progress_hooks)
     opts: dict[str, Any] = {
         "outtmpl": outtmpl,
         "format": "bv*+ba/best",
         "merge_output_format": "mkv",
-        "quiet": False,
-        "no_warnings": False,
+        "quiet": use_hooks,
+        "no_warnings": use_hooks,
         "ignoreerrors": False,
     }
+    if progress_hooks:
+        opts["progress_hooks"] = list(progress_hooks)
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
 

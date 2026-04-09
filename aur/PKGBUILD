@@ -1,0 +1,28 @@
+# Maintainer: Your Name <you@example.com>
+#
+# Set url= and source= to your GitHub repo. Run scripts/release-github-aur.sh from upstream
+# to refresh sha256sums and .SRCINFO from the tag tarball. The tag archive excludes aur/
+# (.gitattributes export-ignore). Copy PKGBUILD + .SRCINFO into your AUR clone and push.
+
+pkgname=video-finder
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="YouTube music-video search, download (yt-dlp), and MHI2-oriented MP4 transcode"
+arch=('any')
+url='https://github.com/YOUR_GITHUB_USER/video-finder'
+license=('MIT')
+depends=('python' 'ffmpeg' 'python-pyqt6' 'python-typer' 'yt-dlp')
+makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel')
+install=video-finder.install
+source=("${pkgname}-${pkgver}.tar.gz::https://github.com/YOUR_GITHUB_USER/video-finder/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "${pkgname}-${pkgver}"
+  python -m build --wheel --no-isolation
+}
+
+package() {
+  cd "${pkgname}-${pkgver}"
+  python -m installer --destdir="$pkgdir" --prefix=/usr dist/*.whl
+}
