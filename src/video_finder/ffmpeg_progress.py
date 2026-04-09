@@ -10,6 +10,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from video_finder.exceptions import OperationCancelled
+
 
 def ffprobe_duration_ms(path: Path) -> int | None:
     """Return container duration in milliseconds, or None if unknown."""
@@ -72,6 +74,7 @@ def run_ffmpeg_with_progress(
     *,
     duration_ms: int | None,
     on_progress: Callable[[float | None], None],
+    should_cancel: Callable[[], bool] | None = None,
 ) -> None:
     """Run ffmpeg, calling ``on_progress`` with percent 0..100, or ``None`` if active but duration unknown."""
     fd, progress_tmp = tempfile.mkstemp(suffix=".ffprog")
@@ -98,6 +101,14 @@ def run_ffmpeg_with_progress(
             on_progress(0.0)
         try:
             while True:
+                if should_cancel and should_cancel():
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=8)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait(timeout=4)
+                    raise OperationCancelled()
                 rc = proc.poll()
                 ot = last_out_time_ms_from_progress_file(progress_path)
                 if duration_ms and duration_ms > 0 and ot is not None:

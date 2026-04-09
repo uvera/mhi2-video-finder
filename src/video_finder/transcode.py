@@ -26,6 +26,7 @@ def transcode(
     *,
     ytdlp_info: dict[str, Any] | None = None,
     on_encode_progress: Callable[[float | None], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> None:
     output_path = output_path.resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -65,7 +66,12 @@ def transcode(
         )
         if on_encode_progress is not None:
             dur_ms = ffprobe_duration_ms(input_path.resolve())
-            run_ffmpeg_with_progress(cmd, duration_ms=dur_ms, on_progress=on_encode_progress)
+            run_ffmpeg_with_progress(
+                cmd,
+                duration_ms=dur_ms,
+                on_progress=on_encode_progress,
+                should_cancel=should_cancel,
+            )
         else:
             subprocess.run(cmd, check=True)
         if cover_path is not None:

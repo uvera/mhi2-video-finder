@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -17,6 +18,8 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QStyle,
+    QSystemTrayIcon,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -46,15 +49,23 @@ class MainWindow(QWidget):
         self._job_order: list[str] = []
 
         self._search_worker: SearchWorker | None = None
+        self._tray: QSystemTrayIcon | None = None
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self._tray = QSystemTrayIcon(self)
+            self._tray.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
+            self._tray.setToolTip("video-finder")
+            self._tray.show()
 
         self._dl = DownloadService(self._settings, parent=self)
         self._cv = ConvertService(self._settings, no_embed=False, parent=self)
         self._dl.progress.connect(self._on_dl_progress)
         self._dl.item_done.connect(self._on_dl_done)
         self._dl.item_failed.connect(self._on_dl_failed)
+        self._dl.download_cancelled.connect(self._on_dl_cancelled)
         self._cv.progress.connect(self._on_cv_progress)
         self._cv.item_done.connect(self._on_cv_done)
         self._cv.item_failed.connect(self._on_cv_failed)
+        self._cv.convert_cancelled.connect(self._on_cv_cancelled)
         self._dl.start()
         self._cv.start()
 
@@ -248,6 +259,35 @@ class MainWindow(QWidget):
     def _search_failed(self, msg: str) -> None:
         QMessageBox.critical(self, "Search failed", msg)
 
+    def _deselect_result_checkboxes(self) -> None:
+        for i in range(self.results_table.rowCount()):
+            it = self.results_table.item(i, 0)
+            if it is not None:
+                it.setCheckState(Qt.CheckState.Unchecked)
+
+    def _notify_queued(self, count: int) -> None:
+        msg = f"Queued {count} video(s) for download."
+        self._status.setText(msg)
+        QApplication.beep()
+        if self._tray is not None:
+            self._tray.showMessage(
+                "video-finder",
+                msg,
+                QSystemTrayIcon.MessageIcon.Information,
+                4000,
+            )
+        else:
+            box = QMessageBox(
+                QMessageBox.Icon.Information,
+                "video-finder",
+                msg,
+                QMessageBox.StandardButton.Ok,
+                self,
+            )
+            box.setModal(False)
+            box.show()
+            QTimer.singleShot(3500, box.close)
+
     def _output_folder(self) -> Path:
         sub = self.subdir_edit.text().strip() or "gui-downloads"
         base = self._settings.merged_output_dir()
@@ -277,14 +317,16 @@ class MainWindow(QWidget):
         if count == 0:
             QMessageBox.information(self, "Queue", "Check one or more videos to queue.")
             return
+        self._deselect_result_checkboxes()
+        self._notify_queued(count)
         self._refresh_downloads_table()
         self._refresh_convert_table()
 
     def _build_downloads_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
-        self.downloads_table = QTableWidget(0, 4)
-        self.downloads_table.setHorizontalHeaderLabels(["Title", "Status", "Progress", "Speed / ETA"])
+        self.downloads_table = QTableWidget(0, 5)
+        self.downloads_table.setHorizontalHeaderLabels(["Title", "Status", "Progress", "Speed / ETA", "Actions"])
         self.downloads_table.horizontalHeader().setStretchLastSection(True)
         lay.addWidget(self.downloads_table)
         return w
@@ -292,8 +334,8 @@ class MainWindow(QWidget):
     def _build_convert_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
-        self.convert_table = QTableWidget(0, 3)
-        self.convert_table.setHorizontalHeaderLabels(["Title", "Status", "Progress"])
+        self.convert_table = QTableWidget(0, 4)
+        self.convert_table.setHorizontalHeaderLabels(["Title", "Status", "Progress", "Actions"])
         self.convert_table.horizontalHeader().setStretchLastSection(True)
         lay.addWidget(self.convert_table)
         return w
@@ -302,7 +344,9 @@ class MainWindow(QWidget):
         rows = [self._jobs[j] for j in self._job_order if self._jobs[j].download_status != "done"]
         self.downloads_table.setRowCount(len(rows))
         for i, job in enumerate(rows):
-            self.downloads_table.setItem(i, 0, QTableWidgetItem(job.candidate.title))
+            title_it = QTableWidgetItem(job.candidate.title)
+            title_it.setData(Qt.ItemDataRole.UserRole, job.job_id)
+            self.downloads_table.setItem(i, 0, title_it)
             st = job.download_status
             if st == "downloading":
                 detail = "Downloading"
@@ -310,6 +354,8 @@ class MainWindow(QWidget):
                 detail = "Queued"
             elif st == "failed":
                 detail = job.download_error or "Failed"
+            elif st == "cancelled":
+                detail = "Cancelled"
             else:
                 detail = st
             self.downloads_table.setItem(i, 1, QTableWidgetItem(detail))
@@ -321,6 +367,21 @@ class MainWindow(QWidget):
             self.downloads_table.setItem(i, 2, QTableWidgetItem(prog_txt))
             extra = f"{job.download_speed}  {job.download_eta}".strip()
             self.downloads_table.setItem(i, 3, QTableWidgetItem(extra))
+            self.downloads_table.setCellWidget(i, 4, self._download_actions_widget(job))
+
+    def _download_actions_widget(self, job: UiJob) -> QWidget:
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(2, 0, 2, 0)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setEnabled(job.download_status in ("queued", "downloading"))
+        cancel_btn.clicked.connect(lambda *, jid=job.job_id: self._cancel_download_for_job(jid))
+        restart_btn = QPushButton("Restart")
+        restart_btn.setEnabled(job.download_status in ("failed", "cancelled"))
+        restart_btn.clicked.connect(lambda *, jid=job.job_id: self._restart_download_for_job(jid))
+        h.addWidget(cancel_btn)
+        h.addWidget(restart_btn)
+        return w
 
     def _refresh_convert_table(self) -> None:
         rows = [
@@ -330,7 +391,9 @@ class MainWindow(QWidget):
         ]
         self.convert_table.setRowCount(len(rows))
         for i, job in enumerate(rows):
-            self.convert_table.setItem(i, 0, QTableWidgetItem(job.candidate.title))
+            title_it = QTableWidgetItem(job.candidate.title)
+            title_it.setData(Qt.ItemDataRole.UserRole, job.job_id)
+            self.convert_table.setItem(i, 0, title_it)
             st = job.convert_status
             if st == "converting":
                 detail = "Converting"
@@ -338,6 +401,8 @@ class MainWindow(QWidget):
                 detail = "Queued"
             elif st == "failed":
                 detail = job.convert_error or "Failed"
+            elif st == "cancelled":
+                detail = "Cancelled"
             else:
                 detail = st
             self.convert_table.setItem(i, 1, QTableWidgetItem(detail))
@@ -346,6 +411,65 @@ class MainWindow(QWidget):
             else:
                 prog_txt = f"{job.convert_percent:.1f}%"
             self.convert_table.setItem(i, 2, QTableWidgetItem(prog_txt))
+            self.convert_table.setCellWidget(i, 3, self._convert_actions_widget(job))
+
+    def _convert_actions_widget(self, job: UiJob) -> QWidget:
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(2, 0, 2, 0)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setEnabled(job.convert_status in ("queued", "waiting", "converting"))
+        cancel_btn.clicked.connect(lambda *, jid=job.job_id: self._cancel_convert_for_job(jid))
+        restart_btn = QPushButton("Restart")
+        raw_ok = job.raw_path is not None and job.raw_path.is_file()
+        restart_btn.setEnabled(
+            raw_ok and job.convert_status in ("failed", "cancelled")
+        )
+        restart_btn.clicked.connect(lambda *, jid=job.job_id: self._restart_convert_for_job(jid))
+        h.addWidget(cancel_btn)
+        h.addWidget(restart_btn)
+        return w
+
+    def _cancel_download_for_job(self, job_id: str) -> None:
+        self._dl.cancel_download(job_id)
+
+    def _restart_download_for_job(self, job_id: str) -> None:
+        job = self._jobs.get(job_id)
+        if not job:
+            return
+        if job.download_status not in ("failed", "cancelled"):
+            return
+        job.download_status = "queued"
+        job.download_percent = -1.0
+        job.download_speed = ""
+        job.download_eta = ""
+        job.download_error = ""
+        self._dl.enqueue(job_id, job.candidate.url)
+        self._refresh_downloads_table()
+
+    def _cancel_convert_for_job(self, job_id: str) -> None:
+        self._cv.cancel_convert(job_id)
+
+    def _restart_convert_for_job(self, job_id: str) -> None:
+        job = self._jobs.get(job_id)
+        if not job or job.download_status != "done":
+            return
+        if job.convert_status not in ("failed", "cancelled"):
+            return
+        if not job.raw_path or not job.raw_path.is_file():
+            QMessageBox.warning(
+                self,
+                "Restart convert",
+                "Raw download file is missing. Restart the download first.",
+            )
+            return
+        self._cv.set_no_embed(self.no_embed_cb.isChecked())
+        job.convert_status = "queued"
+        job.convert_percent = 0.0
+        job.convert_error = ""
+        job.convert_indeterminate = False
+        self._cv.enqueue(job_id, job.raw_path, job.out_path, job.ytdlp_info)
+        self._refresh_convert_table()
 
     def _on_dl_progress(self, job_id: str, pct: float, speed: str, eta: str) -> None:
         job = self._jobs.get(job_id)
@@ -376,6 +500,16 @@ class MainWindow(QWidget):
             return
         job.download_status = "failed"
         job.download_error = err
+        self._refresh_downloads_table()
+
+    def _on_dl_cancelled(self, job_id: str) -> None:
+        job = self._jobs.get(job_id)
+        if not job:
+            return
+        job.download_status = "cancelled"
+        job.download_percent = -1.0
+        job.download_speed = ""
+        job.download_eta = ""
         self._refresh_downloads_table()
 
     def _on_cv_progress(self, job_id: str, pct: object) -> None:
@@ -409,9 +543,19 @@ class MainWindow(QWidget):
         job.convert_error = err
         self._refresh_convert_table()
 
+    def _on_cv_cancelled(self, job_id: str) -> None:
+        job = self._jobs.get(job_id)
+        if not job:
+            return
+        job.convert_status = "cancelled"
+        job.convert_indeterminate = False
+        self._refresh_convert_table()
+
     def closeEvent(self, event) -> None:
         self._dl.stop()
         self._cv.stop()
         self._dl.wait(5000)
         self._cv.wait(5000)
+        if self._tray is not None:
+            self._tray.hide()
         super().closeEvent(event)

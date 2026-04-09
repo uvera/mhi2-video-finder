@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import queue
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import QThread, pyqtSignal
+from yt_dlp.utils import DownloadCancelled
 
 from video_finder.config import Settings
 from video_finder.download import download_to_cache
+from video_finder.exceptions import OperationCancelled
 from video_finder.transcode import transcode
 
 from .progress_util import ytdlp_progress_percent_and_labels
@@ -96,17 +99,29 @@ class SearchWorker(QThread):
 
 
 class DownloadService(QThread):
-    """Sequential download queue; emits progress and completion per job id."""
+    """Sequential download queue; supports cancel for queued and in-progress items."""
 
     progress = pyqtSignal(str, float, str, str)  # id, pct, speed, eta
     item_done = pyqtSignal(str, str, object)  # id, raw_path str, yinfo
     item_failed = pyqtSignal(str, str)
+    download_cancelled = pyqtSignal(str)
 
     def __init__(self, settings: Settings, parent=None) -> None:
         super().__init__(parent)
         self._settings = settings
         self._q: queue.Queue[tuple[str, str] | None] = queue.Queue()
         self._stop = False
+        self._lock = threading.Lock()
+        self._pending_cancel: set[str] = set()
+        self._abort_current = threading.Event()
+        self._active_id: str | None = None
+
+    def cancel_download(self, job_id: str) -> None:
+        with self._lock:
+            if self._active_id == job_id:
+                self._abort_current.set()
+            else:
+                self._pending_cancel.add(job_id)
 
     def stop(self) -> None:
         self._stop = True
@@ -128,23 +143,43 @@ class DownloadService(QThread):
                 continue
             job_id, url = item
 
+            with self._lock:
+                if job_id in self._pending_cancel:
+                    self._pending_cancel.discard(job_id)
+                    self.download_cancelled.emit(job_id)
+                    continue
+                self._active_id = job_id
+                self._abort_current.clear()
+
             def hook(d: dict[str, Any], jid: str = job_id) -> None:
                 pct, speed, eta = ytdlp_progress_percent_and_labels(d)
                 self.progress.emit(jid, pct, speed, eta)
 
             try:
-                raw, yinfo = download_to_cache(url, cache, progress_hooks=[hook])
+                raw, yinfo = download_to_cache(
+                    url,
+                    cache,
+                    progress_hooks=[hook],
+                    should_cancel=lambda: self._abort_current.is_set(),
+                )
                 self.item_done.emit(job_id, str(raw), yinfo)
+            except DownloadCancelled:
+                self.download_cancelled.emit(job_id)
             except Exception as e:
                 self.item_failed.emit(job_id, str(e))
+            finally:
+                with self._lock:
+                    self._active_id = None
+                    self._abort_current.clear()
 
 
 class ConvertService(QThread):
-    """Sequential transcode queue after downloads."""
+    """Sequential transcode queue; supports cancel for queued and in-progress items."""
 
     progress = pyqtSignal(str, object)  # id, percent float or None for indeterminate
     item_done = pyqtSignal(str)
     item_failed = pyqtSignal(str, str)
+    convert_cancelled = pyqtSignal(str)
 
     def __init__(self, settings: Settings, *, no_embed: bool, parent=None) -> None:
         super().__init__(parent)
@@ -152,6 +187,17 @@ class ConvertService(QThread):
         self._no_embed = no_embed
         self._q: queue.Queue[tuple[str, Path, Path, dict[str, Any] | None] | None] = queue.Queue()
         self._stop = False
+        self._lock = threading.Lock()
+        self._pending_cancel: set[str] = set()
+        self._abort_current = threading.Event()
+        self._active_id: str | None = None
+
+    def cancel_convert(self, job_id: str) -> None:
+        with self._lock:
+            if self._active_id == job_id:
+                self._abort_current.set()
+            else:
+                self._pending_cancel.add(job_id)
 
     def set_no_embed(self, v: bool) -> None:
         self._no_embed = v
@@ -175,6 +221,14 @@ class ConvertService(QThread):
                 continue
             job_id, raw_path, out_path, yinfo = item
 
+            with self._lock:
+                if job_id in self._pending_cancel:
+                    self._pending_cancel.discard(job_id)
+                    self.convert_cancelled.emit(job_id)
+                    continue
+                self._active_id = job_id
+                self._abort_current.clear()
+
             def on_prog(p: float | None, jid: str = job_id) -> None:
                 self.progress.emit(jid, p)
 
@@ -185,10 +239,17 @@ class ConvertService(QThread):
                     self._settings,
                     ytdlp_info=None if self._no_embed else yinfo,
                     on_encode_progress=on_prog,
+                    should_cancel=lambda: self._abort_current.is_set(),
                 )
                 self.item_done.emit(job_id)
+            except OperationCancelled:
+                self.convert_cancelled.emit(job_id)
             except Exception as e:
                 self.item_failed.emit(job_id, str(e))
+            finally:
+                with self._lock:
+                    self._active_id = None
+                    self._abort_current.clear()
 
 
 def new_job_id() -> str:

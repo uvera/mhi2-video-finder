@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import Any
 
 import yt_dlp
+from yt_dlp.utils import DownloadCancelled
 
 _VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
@@ -26,6 +27,7 @@ def download_to_cache(
     cache_dir: Path,
     *,
     progress_hooks: list[Callable[[dict[str, Any]], None]] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """Download best video+audio merged to MKV; return path and yt-dlp info dict (for tags / thumbnails).
 
@@ -36,7 +38,15 @@ def download_to_cache(
     url = normalize_watch_url(url_or_id)
 
     outtmpl = str(cache_dir / "%(id)s.%(ext)s")
-    use_hooks = bool(progress_hooks)
+    hooks = list(progress_hooks or [])
+    if should_cancel:
+
+        def _cancel_hook(_d: dict[str, Any]) -> None:
+            if should_cancel():
+                raise DownloadCancelled()
+
+        hooks.append(_cancel_hook)
+    use_hooks = bool(hooks)
     opts: dict[str, Any] = {
         "outtmpl": outtmpl,
         "format": "bv*+ba/best",
@@ -45,8 +55,8 @@ def download_to_cache(
         "no_warnings": use_hooks,
         "ignoreerrors": False,
     }
-    if progress_hooks:
-        opts["progress_hooks"] = list(progress_hooks)
+    if hooks:
+        opts["progress_hooks"] = hooks
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
 
