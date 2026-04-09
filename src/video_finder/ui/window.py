@@ -66,8 +66,6 @@ class MainWindow(QWidget):
         self._cv.item_done.connect(self._on_cv_done)
         self._cv.item_failed.connect(self._on_cv_failed)
         self._cv.convert_cancelled.connect(self._on_cv_cancelled)
-        self._dl.start()
-        self._cv.start()
 
         tabs = QTabWidget()
         tabs.addTab(self._build_search_tab(), "Search")
@@ -554,8 +552,6 @@ class MainWindow(QWidget):
     def closeEvent(self, event) -> None:
         self._dl.stop()
         self._cv.stop()
-        self._dl.wait(5000)
-        self._cv.wait(5000)
         if self._tray is not None:
             self._tray.hide()
         super().closeEvent(event)
