@@ -664,8 +664,12 @@ class MainWindow(QWidget):
         restart_btn = QPushButton("Restart")
         restart_btn.setEnabled(job.download_status in ("failed", "cancelled"))
         restart_btn.clicked.connect(lambda *, jid=job.job_id: self._restart_download_for_job(jid))
+        remove_btn = QPushButton("Remove")
+        remove_btn.setToolTip("Remove this entry from the queue (cancels an active download if needed).")
+        remove_btn.clicked.connect(lambda *, jid=job.job_id: self._remove_job_from_queue(jid))
         h.addWidget(cancel_btn)
         h.addWidget(restart_btn)
+        h.addWidget(remove_btn)
         return w
 
     def _refresh_convert_table(self) -> None:
@@ -716,12 +720,49 @@ class MainWindow(QWidget):
             raw_ok and job.convert_status in ("failed", "cancelled")
         )
         restart_btn.clicked.connect(lambda *, jid=job.job_id: self._restart_convert_for_job(jid))
+        remove_btn = QPushButton("Remove")
+        remove_btn.setToolTip("Remove this entry from the queue (cancels an active transcode if needed).")
+        remove_btn.clicked.connect(lambda *, jid=job.job_id: self._remove_job_from_queue(jid))
         h.addWidget(cancel_btn)
         h.addWidget(restart_btn)
+        h.addWidget(remove_btn)
         return w
 
     def _cancel_download_for_job(self, job_id: str) -> None:
         self._dl.cancel_download(job_id)
+
+    def _remove_job_from_queue(self, job_id: str) -> None:
+        job = self._jobs.get(job_id)
+        if not job:
+            return
+        title = job.candidate.title
+        if (
+            QMessageBox.question(
+                self,
+                "Remove from queue",
+                f"Remove “{title}” from the download/convert queue?\n\n"
+                "This drops the job from the list; files already on disk are not deleted.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        need_cancel_dl = job.download_status in ("queued", "downloading")
+        need_cancel_cv = job.download_status == "done" and job.convert_status in (
+            "queued",
+            "waiting",
+            "converting",
+        )
+        self._job_order = [j for j in self._job_order if j != job_id]
+        self._jobs.pop(job_id, None)
+        self._store.delete(job_id)
+        if need_cancel_dl:
+            self._dl.cancel_download(job_id)
+        if need_cancel_cv:
+            self._cv.cancel_convert(job_id)
+        self._refresh_downloads_table()
+        self._refresh_convert_table()
 
     def _restart_download_for_job(self, job_id: str) -> None:
         job = self._jobs.get(job_id)
