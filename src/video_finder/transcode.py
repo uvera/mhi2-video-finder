@@ -10,7 +10,7 @@ from collections.abc import Callable
 from typing import Any
 
 from video_finder.config import Settings, build_ffmpeg_command
-from video_finder.ffmpeg_progress import ffprobe_duration_ms, run_ffmpeg_with_progress
+from video_finder.ffmpeg_progress import ffprobe_duration_ms_best, run_ffmpeg_with_progress
 from video_finder.metadata import (
     attach_album_art_to_mp4,
     best_thumbnail_url,
@@ -66,7 +66,7 @@ def transcode(
         )
         if on_encode_progress is not None:
             on_encode_progress(0.0)
-            dur_ms = ffprobe_duration_ms(input_path.resolve())
+            dur_ms = ffprobe_duration_ms_best(input_path.resolve())
             run_ffmpeg_with_progress(
                 cmd,
                 duration_ms=dur_ms,
