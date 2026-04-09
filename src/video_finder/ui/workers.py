@@ -210,12 +210,20 @@ class ConvertService(QObject):
     def set_no_embed(self, v: bool) -> None:
         self._no_embed = v
 
-    def enqueue(self, job_id: str, raw_path: Path, out_path: Path, yinfo: dict[str, Any] | None) -> None:
+    def enqueue(
+        self,
+        job_id: str,
+        raw_path: Path,
+        out_path: Path,
+        yinfo: dict[str, Any] | None,
+        *,
+        no_embed: bool,
+    ) -> None:
         with self._lock:
             if self._stopped:
                 return
         try:
-            self._executor.submit(self._run_convert, job_id, raw_path, out_path, yinfo)
+            self._executor.submit(self._run_convert, job_id, raw_path, out_path, yinfo, no_embed)
         except RuntimeError:
             pass
 
@@ -225,6 +233,7 @@ class ConvertService(QObject):
         raw_path: Path,
         out_path: Path,
         yinfo: dict[str, Any] | None,
+        no_embed: bool,
     ) -> None:
         with self._lock:
             if self._stopped:
@@ -235,7 +244,6 @@ class ConvertService(QObject):
                 return
             ev = threading.Event()
             self._abort_events[job_id] = ev
-            no_embed = self._no_embed
 
         def on_prog(p: float | None, jid: str = job_id) -> None:
             self.progress.emit(jid, p)

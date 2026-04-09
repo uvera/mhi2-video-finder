@@ -37,6 +37,8 @@ video-finder-ui --config /path/to/config.toml
 
 A `.desktop` entry is installed as `video-finder` (launches `video-finder-ui`) when you install from the wheel.
 
+Incomplete download/convert jobs are saved under **`$XDG_CACHE_HOME/video-finder/jobs.sqlite`** (default `~/.cache/video-finder/jobs.sqlite`) so they survive app restarts; finished jobs are removed from that database. Rows with a missing raw file or an existing output MP4 are cleaned up on startup.
+
 ## Config
 
 Optional file: `$XDG_CONFIG_HOME/video-finder/config.toml` (default: `~/.config/video-finder/config.toml`).

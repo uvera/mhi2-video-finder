@@ -32,6 +32,7 @@ from video_finder.config import Settings, load_settings
 from video_finder.search import VideoCandidate
 from video_finder.workflow import ensure_output_dir, safe_stem, unique_out_path
 
+from .job_store import JobStore
 from .models import UiJob
 from .workers import ConvertService, DownloadService, SearchWorker, new_job_id
 
@@ -67,6 +68,8 @@ class MainWindow(QWidget):
         self._cv.item_failed.connect(self._on_cv_failed)
         self._cv.convert_cancelled.connect(self._on_cv_cancelled)
 
+        self._store = JobStore()
+
         tabs = QTabWidget()
         tabs.addTab(self._build_search_tab(), "Search")
         tabs.addTab(self._build_downloads_tab(), "Downloads")
@@ -79,6 +82,67 @@ class MainWindow(QWidget):
         root.addWidget(self._status)
 
         self._apply_settings_to_widgets()
+
+        self._load_persisted_jobs()
+        self._refresh_downloads_table()
+        self._refresh_convert_table()
+
+    def _persist_job(self, job: UiJob) -> None:
+        try:
+            seq = self._job_order.index(job.job_id)
+        except ValueError:
+            return
+        self._store.upsert(job, seq)
+
+    def _persist_all_jobs(self) -> None:
+        self._store.prune_not_in(set(self._job_order))
+        for seq, jid in enumerate(self._job_order):
+            if jid in self._jobs:
+                self._store.upsert(self._jobs[jid], seq)
+
+    def _load_persisted_jobs(self) -> None:
+        for job in self._store.load_all():
+            outp = job.out_path
+            if outp.is_file() and outp.stat().st_size >= 4096:
+                self._store.delete(job.job_id)
+                continue
+            self._jobs[job.job_id] = job
+            self._job_order.append(job.job_id)
+
+        for jid in list(self._job_order):
+            job = self._jobs[jid]
+            if job.download_status == "downloading":
+                job.download_status = "queued"
+                job.download_percent = -1.0
+                job.download_speed = ""
+                job.download_eta = ""
+
+            raw_ok = job.raw_path is not None and job.raw_path.is_file()
+
+            if job.download_status == "done" and not raw_ok:
+                job.download_status = "queued"
+                job.download_percent = -1.0
+                job.ytdlp_info = None
+                job.convert_status = "waiting"
+
+            if job.download_status in ("failed", "cancelled"):
+                continue
+
+            if job.download_status == "queued":
+                self._dl.enqueue(jid, job.candidate.url)
+                continue
+
+            if job.download_status == "done" and raw_ok:
+                if job.convert_status in ("queued", "waiting", "converting"):
+                    job.convert_status = "queued"
+                    job.convert_percent = 0.0
+                    self._cv.enqueue(
+                        jid,
+                        job.raw_path,
+                        job.out_path,
+                        job.ytdlp_info,
+                        no_embed=job.no_embed,
+                    )
 
     def _apply_settings_to_widgets(self) -> None:
         self.limit_spin.setValue(self._settings.search_limit if self._settings.search_limit else 15)
@@ -297,6 +361,7 @@ class MainWindow(QWidget):
             return
         out_folder = self._output_folder()
         self._cv.set_no_embed(self.no_embed_cb.isChecked())
+        ne = self.no_embed_cb.isChecked()
         count = 0
         for i in range(self.results_table.rowCount()):
             it = self.results_table.item(i, 0)
@@ -306,11 +371,12 @@ class MainWindow(QWidget):
             jid = new_job_id()
             stem = safe_stem(c.title, c.video_id)
             outp = unique_out_path(out_folder, stem, c.video_id)
-            job = UiJob(job_id=jid, candidate=c, out_path=outp)
+            job = UiJob(job_id=jid, candidate=c, out_path=outp, no_embed=ne)
             self._jobs[jid] = job
             self._job_order.append(jid)
             self._dl.enqueue(jid, c.url)
             job.download_status = "queued"
+            self._persist_job(job)
             count += 1
         if count == 0:
             QMessageBox.information(self, "Queue", "Check one or more videos to queue.")
@@ -443,6 +509,7 @@ class MainWindow(QWidget):
         job.download_eta = ""
         job.download_error = ""
         self._dl.enqueue(job_id, job.candidate.url)
+        self._persist_job(job)
         self._refresh_downloads_table()
 
     def _cancel_convert_for_job(self, job_id: str) -> None:
@@ -461,12 +528,19 @@ class MainWindow(QWidget):
                 "Raw download file is missing. Restart the download first.",
             )
             return
-        self._cv.set_no_embed(self.no_embed_cb.isChecked())
+        job.no_embed = self.no_embed_cb.isChecked()
         job.convert_status = "queued"
         job.convert_percent = 0.0
         job.convert_error = ""
         job.convert_indeterminate = False
-        self._cv.enqueue(job_id, job.raw_path, job.out_path, job.ytdlp_info)
+        self._cv.enqueue(
+            job_id,
+            job.raw_path,
+            job.out_path,
+            job.ytdlp_info,
+            no_embed=job.no_embed,
+        )
+        self._persist_job(job)
         self._refresh_convert_table()
 
     def _on_dl_progress(self, job_id: str, pct: float, speed: str, eta: str) -> None:
@@ -490,7 +564,14 @@ class MainWindow(QWidget):
         job.convert_status = "queued"
         job.convert_percent = 0.0
         job.convert_indeterminate = False
-        self._cv.enqueue(job_id, job.raw_path, job.out_path, job.ytdlp_info)
+        self._cv.enqueue(
+            job_id,
+            job.raw_path,
+            job.out_path,
+            job.ytdlp_info,
+            no_embed=job.no_embed,
+        )
+        self._persist_job(job)
         self._refresh_downloads_table()
         self._refresh_convert_table()
 
@@ -500,6 +581,7 @@ class MainWindow(QWidget):
             return
         job.download_status = "failed"
         job.download_error = err
+        self._persist_job(job)
         self._refresh_downloads_table()
 
     def _on_dl_cancelled(self, job_id: str) -> None:
@@ -510,6 +592,7 @@ class MainWindow(QWidget):
         job.download_percent = -1.0
         job.download_speed = ""
         job.download_eta = ""
+        self._persist_job(job)
         self._refresh_downloads_table()
 
     def _on_cv_progress(self, job_id: str, pct: object) -> None:
@@ -531,6 +614,7 @@ class MainWindow(QWidget):
         job.convert_status = "done"
         job.convert_percent = 100.0
         job.convert_indeterminate = False
+        self._persist_job(job)
         self._refresh_downloads_table()
         self._refresh_convert_table()
         self._status.setText(f"Saved: {job.out_path}")
@@ -541,6 +625,7 @@ class MainWindow(QWidget):
             return
         job.convert_status = "failed"
         job.convert_error = err
+        self._persist_job(job)
         self._refresh_convert_table()
 
     def _on_cv_cancelled(self, job_id: str) -> None:
@@ -549,9 +634,12 @@ class MainWindow(QWidget):
             return
         job.convert_status = "cancelled"
         job.convert_indeterminate = False
+        self._persist_job(job)
         self._refresh_convert_table()
 
     def closeEvent(self, event) -> None:
+        self._persist_all_jobs()
+        self._store.close()
         self._dl.stop()
         self._cv.stop()
         if self._tray is not None:

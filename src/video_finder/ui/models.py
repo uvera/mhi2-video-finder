@@ -14,6 +14,7 @@ class UiJob:
     job_id: str
     candidate: VideoCandidate
     out_path: Path
+    no_embed: bool = False
     # Download phase
     download_status: str = "queued"  # queued | downloading | done | failed
     download_percent: float = -1.0  # -1 = unknown
