@@ -488,6 +488,8 @@ class MainWindow(QWidget):
         job.raw_path = Path(raw_path)
         job.ytdlp_info = yinfo if isinstance(yinfo, dict) else None
         job.convert_status = "queued"
+        job.convert_percent = 0.0
+        job.convert_indeterminate = False
         self._cv.enqueue(job_id, job.raw_path, job.out_path, job.ytdlp_info)
         self._refresh_downloads_table()
         self._refresh_convert_table()

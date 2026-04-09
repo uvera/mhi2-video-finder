@@ -76,7 +76,10 @@ def run_ffmpeg_with_progress(
     on_progress: Callable[[float | None], None],
     should_cancel: Callable[[], bool] | None = None,
 ) -> None:
-    """Run ffmpeg, calling ``on_progress`` with percent 0..100, or ``None`` if active but duration unknown."""
+    """Run ffmpeg, calling ``on_progress`` with percent 0..99 during encode, or ``None`` if duration unknown.
+
+    Emits at most **99%** on success so callers can reserve **100%** for any follow-up work (e.g. album art).
+    """
     fd, progress_tmp = tempfile.mkstemp(suffix=".ffprog")
     os.close(fd)
     progress_path = Path(progress_tmp)
@@ -112,7 +115,7 @@ def run_ffmpeg_with_progress(
                 rc = proc.poll()
                 ot = last_out_time_ms_from_progress_file(progress_path)
                 if duration_ms and duration_ms > 0 and ot is not None:
-                    pct = min(100.0, max(0.0, (ot / duration_ms) * 100.0))
+                    pct = min(99.0, max(0.0, (ot / duration_ms) * 100.0))
                     if pct > last_reported + 0.25 or rc is not None:
                         on_progress(pct)
                         last_reported = pct
@@ -126,6 +129,6 @@ def run_ffmpeg_with_progress(
         if rc_final != 0:
             err = b"".join(stderr_chunks).decode("utf-8", errors="replace")
             raise subprocess.CalledProcessError(rc_final, cmd2, stderr=err.encode())
-        on_progress(100.0)
+        on_progress(99.0)
     finally:
         progress_path.unlink(missing_ok=True)

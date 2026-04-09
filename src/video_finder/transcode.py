@@ -65,6 +65,7 @@ def transcode(
             metadata_args=metadata_args,
         )
         if on_encode_progress is not None:
+            on_encode_progress(0.0)
             dur_ms = ffprobe_duration_ms(input_path.resolve())
             run_ffmpeg_with_progress(
                 cmd,
@@ -81,6 +82,8 @@ def transcode(
             except subprocess.CalledProcessError:
                 tmp_encode.replace(output_path)
                 raise
+        if on_encode_progress is not None:
+            on_encode_progress(100.0)
     finally:
         if tmp_encode is not None:
             tmp_encode.unlink(missing_ok=True)
