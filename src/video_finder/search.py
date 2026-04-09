@@ -81,6 +81,44 @@ def _yt_dlp_search_url(query: str, limit: int | None) -> str:
     return f"ytsearch{max(1, limit)}:{query}"
 
 
+def video_from_url(
+    url: str,
+    *,
+    match_filter: str | None = None,
+) -> VideoCandidate:
+    """Resolve a single watch URL (youtube.com, youtu.be, Shorts, etc.) via yt-dlp."""
+    u = url.strip()
+    if not u:
+        raise ValueError("URL is empty")
+    opts: dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+    }
+    if match_filter:
+        opts["match_filter"] = match_filter
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(u, download=False)
+    if not info:
+        raise ValueError("Could not resolve URL")
+    entries = info.get("entries")
+    if entries:
+        valid = [e for e in entries if e]
+        if len(valid) > 1:
+            raise ValueError(
+                "That URL lists multiple videos. Use Source → Playlist, or paste a single video link."
+            )
+        if len(valid) == 1:
+            c = _entry_to_candidate(valid[0] if isinstance(valid[0], dict) else {})
+            if c:
+                return c
+        raise ValueError("No video found at URL")
+    c = _entry_to_candidate(info if isinstance(info, dict) else {})
+    if not c:
+        raise ValueError("Not a recognizable single video URL")
+    return c
+
+
 def search_youtube(
     query: str,
     *,

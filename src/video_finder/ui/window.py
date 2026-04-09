@@ -274,12 +274,12 @@ class MainWindow(QWidget):
         src_box = QGroupBox("Source")
         src_grid = QGridLayout(src_box)
         self.source_combo = QComboBox()
-        self.source_combo.addItems(["Search term", "Channel", "Playlist"])
+        self.source_combo.addItems(["Search term", "Channel", "Playlist", "Video URL"])
         self.source_combo.currentIndexChanged.connect(self._update_source_widgets)
         src_grid.addWidget(QLabel("Type:"), 0, 0)
         src_grid.addWidget(self.source_combo, 0, 1)
         self.query_edit = QLineEdit()
-        self.query_edit.setPlaceholderText("Query, @channel, channel URL, or playlist URL")
+        self.query_edit.setPlaceholderText("Query, @channel, channel / playlist URL, or single video URL")
         src_grid.addWidget(QLabel("Input:"), 1, 0)
         src_grid.addWidget(self.query_edit, 1, 1)
         self.use_api_cb = QCheckBox("Use YouTube Data API (needs API key)")
@@ -428,10 +428,15 @@ class MainWindow(QWidget):
     def _update_source_widgets(self) -> None:
         idx = self.source_combo.currentIndex()
         is_search = idx == 0
+        is_video_url = idx == 3
         self.use_api_cb.setEnabled(is_search)
         self.artist_edit.setEnabled(is_search)
         self.title_edit.setEnabled(is_search)
         self.template_combo.setEnabled(is_search)
+        if is_video_url:
+            self.query_edit.setPlaceholderText("Paste YouTube video URL (watch, youtu.be, Shorts, …)")
+        else:
+            self.query_edit.setPlaceholderText("Query, @channel, channel / playlist URL, or single video URL")
 
     def _browse_config(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "config.toml", str(Path.home()), "TOML (*.toml);;All (*)")
@@ -447,12 +452,12 @@ class MainWindow(QWidget):
             return
         q = self.query_edit.text().strip()
         idx = self.source_combo.currentIndex()
-        mode = ("search", "channel", "playlist")[idx]
+        mode = ("search", "channel", "playlist", "video_url")[idx]
         if not q and not (mode == "search" and self.artist_edit.text().strip()):
             QMessageBox.warning(
                 self,
                 "Search",
-                "Enter a search query, channel, or playlist URL (or an artist for template search).",
+                "Enter a search query, channel, playlist, or video URL (or an artist for template search).",
             )
             return
 

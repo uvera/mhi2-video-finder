@@ -48,7 +48,7 @@ class SearchWorker(QThread):
 
     def run(self) -> None:
         try:
-            from video_finder.search import list_channel_videos, list_playlist_videos
+            from video_finder.search import list_channel_videos, list_playlist_videos, video_from_url
             from video_finder.workflow import gather_search_rows
 
             mf = self._settings.match_filter
@@ -57,6 +57,8 @@ class SearchWorker(QThread):
                 rows = list_channel_videos(self._query, limit=n, match_filter=mf)
             elif self._mode == "playlist":
                 rows = list_playlist_videos(self._query, limit=n, match_filter=mf)
+            elif self._mode == "video_url":
+                rows = [video_from_url(self._query, match_filter=mf)]
             elif self._mode == "search" and self._use_api:
                 _, rows = gather_search_rows(
                     self._settings,
