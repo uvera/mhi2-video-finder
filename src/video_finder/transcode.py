@@ -10,7 +10,11 @@ from collections.abc import Callable
 from typing import Any
 
 from video_finder.config import Settings, build_ffmpeg_command
-from video_finder.ffmpeg_progress import ffprobe_duration_ms_best, run_ffmpeg_with_progress
+from video_finder.ffmpeg_progress import (
+    ffprobe_duration_ms_best,
+    prepare_ffmpeg_subprocess_argv,
+    run_ffmpeg_with_progress,
+)
 from video_finder.metadata import (
     attach_album_art_to_mp4,
     best_thumbnail_url,
@@ -72,13 +76,29 @@ def transcode(
                 duration_ms=dur_ms,
                 on_progress=on_encode_progress,
                 should_cancel=should_cancel,
+                nice_delta=settings.ffmpeg_nice,
+                cpu_limit_percent=settings.ffmpeg_cpu_limit_percent,
             )
         else:
-            subprocess.run(cmd, check=True)
+            argv, pre = prepare_ffmpeg_subprocess_argv(
+                cmd,
+                nice_delta=settings.ffmpeg_nice,
+                cpu_limit_percent=settings.ffmpeg_cpu_limit_percent,
+            )
+            run_kw: dict[str, object] = {"check": True}
+            if pre is not None:
+                run_kw["preexec_fn"] = pre
+            subprocess.run(argv, **run_kw)
         if cover_path is not None:
             assert tmp_encode is not None
             try:
-                attach_album_art_to_mp4(tmp_encode, cover_path, output_path)
+                attach_album_art_to_mp4(
+                    tmp_encode,
+                    cover_path,
+                    output_path,
+                    nice_delta=settings.ffmpeg_nice,
+                    cpu_limit_percent=settings.ffmpeg_cpu_limit_percent,
+                )
             except subprocess.CalledProcessError:
                 tmp_encode.replace(output_path)
                 raise

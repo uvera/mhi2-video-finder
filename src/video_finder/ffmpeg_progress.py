@@ -45,6 +45,44 @@ def wrap_ffmpeg_line_buffered_stderr(cmd: list[str]) -> list[str]:
     return [stdbuf, "-e0", "-oL", cmd[0], *cmd[1:]]
 
 
+def ffmpeg_preexec_nice(delta: int) -> Callable[[], None] | None:
+    """Return a ``preexec_fn`` that raises niceness in the child (Unix only). ``delta`` is clamped 0–19."""
+    if delta <= 0 or os.name == "nt":
+        return None
+    d = min(19, max(1, int(delta)))
+
+    def _apply() -> None:
+        try:
+            os.nice(d)
+        except OSError:
+            pass
+
+    return _apply
+
+
+def wrap_ffmpeg_cpulimit(cmd: list[str], limit_percent: int) -> list[str]:
+    """Wrap argv with ``cpulimit -z -l N --`` when ``limit_percent`` is 1–100 and ``cpulimit`` exists."""
+    if limit_percent <= 0 or os.name == "nt":
+        return list(cmd)
+    pct = min(100, max(1, int(limit_percent)))
+    exe = shutil.which("cpulimit")
+    if not exe:
+        return list(cmd)
+    return [exe, "-z", "-l", str(pct), "--", *cmd]
+
+
+def prepare_ffmpeg_subprocess_argv(
+    cmd: list[str],
+    *,
+    nice_delta: int = 0,
+    cpu_limit_percent: int = 0,
+) -> tuple[list[str], Callable[[], None] | None]:
+    """``stdbuf`` wrapper, optional ``cpulimit``, and optional ``preexec_fn`` for :func:`os.nice`."""
+    argv = wrap_ffmpeg_line_buffered_stderr(list(cmd))
+    argv = wrap_ffmpeg_cpulimit(argv, cpu_limit_percent)
+    return argv, ffmpeg_preexec_nice(nice_delta)
+
+
 def ffprobe_duration_ms(path: Path) -> int | None:
     """Return container duration in milliseconds, or None if unknown."""
     r = subprocess.run(
@@ -196,6 +234,8 @@ def run_ffmpeg_with_progress(
     duration_ms: int | None,
     on_progress: Callable[[float | None], None],
     should_cancel: Callable[[], bool] | None = None,
+    nice_delta: int = 0,
+    cpu_limit_percent: int = 0,
 ) -> None:
     """Run ffmpeg; progress primarily from a temp ``-progress`` file (live updates).
 
@@ -208,13 +248,19 @@ def run_ffmpeg_with_progress(
     progress_path = Path(prog_tmp)
     try:
         cmd_progress = insert_ffmpeg_progress_path(list(cmd), progress_path)
-        launch_cmd = wrap_ffmpeg_line_buffered_stderr(cmd_progress)
-        proc = subprocess.Popen(
-            launch_cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=False,
+        launch_cmd, _preexec = prepare_ffmpeg_subprocess_argv(
+            cmd_progress,
+            nice_delta=nice_delta,
+            cpu_limit_percent=cpu_limit_percent,
         )
+        popen_kw: dict[str, object] = {
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.PIPE,
+            "text": False,
+        }
+        if _preexec is not None:
+            popen_kw["preexec_fn"] = _preexec
+        proc = subprocess.Popen(launch_cmd, **popen_kw)
     except Exception:
         progress_path.unlink(missing_ok=True)
         raise

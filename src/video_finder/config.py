@@ -21,6 +21,11 @@ def _config_path() -> Path:
     return _expand("~/.config/video-finder/config.toml")
 
 
+def default_config_path() -> Path:
+    """Resolved path to the default ``config.toml`` (XDG or ``~/.config/...``)."""
+    return _config_path()
+
+
 def _env_key(name: str) -> str:
     return f"VIDEO_FINDER_{name.upper()}"
 
@@ -47,6 +52,10 @@ def _coerce_field(name: str, raw: str) -> Any:
         "search_limit",
         "audio_sample_rate",
         "ffmpeg_threads",
+        "ffmpeg_nice",
+        "ffmpeg_cpu_limit_percent",
+        "max_parallel_downloads",
+        "max_parallel_converts",
         "vaapi_profile",
     ):
         return int(raw)
@@ -77,6 +86,13 @@ class Settings:
     h264_tune: str = ""
     # If > 0, ffmpeg global -threads (affects decode/encode). 0 = ffmpeg default (usually fine).
     ffmpeg_threads: int = 0
+    # Unix only: add this much niceness (0–19) so ffmpeg yields CPU to other apps. 0 = unchanged.
+    ffmpeg_nice: int = 0
+    # If 1–100 and ``cpulimit`` is on PATH, cap average CPU (per process tree). 0 = off. Linux: pacman -S cpulimit
+    ffmpeg_cpu_limit_percent: int = 0
+    # GUI / CLI: concurrent yt-dlp downloads and ffmpeg encodes (each ≥ 1).
+    max_parallel_downloads: int = 4
+    max_parallel_converts: int = 4
     # Video encoder: libx264 (CPU), h264_nvenc/nvenc (NVIDIA), h264_vaapi/vaapi (Intel/AMD via VAAPI).
     video_encoder: str = "libx264"
     # NVENC preset: p1 (fastest) … p7 (slowest) on newer ffmpeg; try "llhp" or "fast" if p1 is rejected.
@@ -147,6 +163,54 @@ def load_settings(path: Path | None = None) -> Settings:
     s.fps = _fps_to_str(s.fps)
 
     return s
+
+
+def _toml_escape_string(s: str) -> str:
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _format_toml_scalar(val: Any) -> str:
+    if isinstance(val, bool):
+        return "true" if val else "false"
+    if isinstance(val, int):
+        return str(val)
+    if isinstance(val, float):
+        return str(val)
+    if isinstance(val, str):
+        return f'"{_toml_escape_string(val)}"'
+    raise TypeError(f"unsupported TOML type: {type(val)!r}")
+
+
+def _write_merged_config(path: Path, data: dict[str, Any]) -> None:
+    lines = ["# video-finder config", ""]
+    for key in sorted(data.keys()):
+        val = data[key]
+        if val is None:
+            continue
+        lines.append(f"{key} = {_format_toml_scalar(val)}")
+    lines.append("")
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def save_settings(settings: Settings, path: Path | None = None) -> Path:
+    """Merge ``settings`` into ``path`` (default: XDG config) and write TOML.
+
+    Keys from :class:`Settings` are updated; other keys already in the file are kept.
+    """
+    cfg_path = path or _config_path()
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    merged: dict[str, Any] = dict(_load_toml(cfg_path))
+    for f in fields(Settings):
+        val = getattr(settings, f.name)
+        if val is None:
+            merged.pop(f.name, None)
+            continue
+        if isinstance(val, Path):
+            merged[f.name] = str(val)
+        else:
+            merged[f.name] = val
+    _write_merged_config(cfg_path, merged)
+    return cfg_path
 
 
 def _video_bitrate_bps(settings: Settings) -> tuple[int, int, int]:

@@ -11,6 +11,8 @@ from typing import Any
 from urllib.error import URLError, HTTPError
 from urllib.request import Request, urlopen
 
+from video_finder.ffmpeg_progress import prepare_ffmpeg_subprocess_argv
+
 # ffmpeg / iTunes-style keys (MP4)
 _FFMPEG_META_KEYS = (
     "title",
@@ -138,6 +140,9 @@ def attach_album_art_to_mp4(
     mp4_path: Path,
     image_path: Path,
     output_path: Path,
+    *,
+    nice_delta: int = 0,
+    cpu_limit_percent: int = 0,
 ) -> None:
     """Remux: copy main video/audio from mp4_path, add image as MJPEG attached_pic."""
     output_path = output_path.resolve()
@@ -171,7 +176,15 @@ def attach_album_art_to_mp4(
             "+faststart",
             str(tmp_out),
         ]
-        subprocess.run(cmd, check=True)
+        argv, pre = prepare_ffmpeg_subprocess_argv(
+            cmd,
+            nice_delta=nice_delta,
+            cpu_limit_percent=cpu_limit_percent,
+        )
+        run_kw: dict[str, object] = {"check": True}
+        if pre is not None:
+            run_kw["preexec_fn"] = pre
+        subprocess.run(argv, **run_kw)
         tmp_out.replace(output_path)
     finally:
         tmp_out.unlink(missing_ok=True)

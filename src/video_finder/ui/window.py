@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
 )
 
 from video_finder import __version__
-from video_finder.config import Settings, load_settings
+from video_finder.config import Settings, default_config_path, load_settings, save_settings
 from video_finder.search import VideoCandidate
 from video_finder.workflow import ensure_output_dir, safe_stem, unique_out_path
 
@@ -74,6 +74,7 @@ class MainWindow(QWidget):
         tabs.addTab(self._build_search_tab(), "Search")
         tabs.addTab(self._build_downloads_tab(), "Downloads")
         tabs.addTab(self._build_convert_tab(), "Convert")
+        tabs.addTab(self._build_settings_tab(), "Settings")
 
         root = QVBoxLayout(self)
         root.addWidget(tabs)
@@ -146,6 +147,45 @@ class MainWindow(QWidget):
 
     def _apply_settings_to_widgets(self) -> None:
         self.limit_spin.setValue(self._settings.search_limit if self._settings.search_limit else 15)
+        self.ui_ffmpeg_threads.setValue(max(0, min(32, self._settings.ffmpeg_threads)))
+        self.ui_ffmpeg_nice.setValue(max(0, min(19, self._settings.ffmpeg_nice)))
+        self.ui_ffmpeg_cpu_limit.setValue(max(0, min(100, self._settings.ffmpeg_cpu_limit_percent)))
+        self.ui_max_parallel_dl.setValue(max(1, min(32, self._settings.max_parallel_downloads)))
+        self.ui_max_parallel_cv.setValue(max(1, min(32, self._settings.max_parallel_converts)))
+
+    def _sync_widgets_to_settings(self) -> None:
+        self._settings.ffmpeg_threads = self.ui_ffmpeg_threads.value()
+        self._settings.ffmpeg_nice = self.ui_ffmpeg_nice.value()
+        self._settings.ffmpeg_cpu_limit_percent = self.ui_ffmpeg_cpu_limit.value()
+        self._settings.max_parallel_downloads = self.ui_max_parallel_dl.value()
+        self._settings.max_parallel_converts = self.ui_max_parallel_cv.value()
+
+    def _settings_config_target(self) -> Path:
+        t = self.config_edit.text().strip()
+        return Path(t) if t else default_config_path()
+
+    def _apply_session_settings(self) -> None:
+        self._sync_widgets_to_settings()
+        self._dl.set_max_workers(self._settings.max_parallel_downloads)
+        self._cv.set_max_workers(self._settings.max_parallel_converts)
+        QMessageBox.information(
+            self,
+            "Settings",
+            "Applied for this session. New encodes use the FFmpeg limits; queue width is updated.",
+        )
+
+    def _save_settings_to_file(self) -> None:
+        self._sync_widgets_to_settings()
+        path = self._settings_config_target()
+        try:
+            save_settings(self._settings, path)
+        except OSError as e:
+            QMessageBox.critical(self, "Save failed", str(e))
+            return
+        if not self.config_edit.text().strip():
+            self.config_edit.setText(str(path))
+        self._config_path = path
+        QMessageBox.information(self, "Settings", f"Saved to:\n{path}")
 
     def _reload_settings(self) -> None:
         p = Path(self.config_edit.text().strip()) if self.config_edit.text().strip() else None
@@ -241,6 +281,61 @@ class MainWindow(QWidget):
         queue_row.addWidget(self.queue_btn)
         lay.addLayout(queue_row)
 
+        return w
+
+    def _build_settings_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+
+        enc = QGroupBox("FFmpeg / CPU")
+        g = QGridLayout(enc)
+        g.addWidget(QLabel("ffmpeg -threads (0 = default):"), 0, 0)
+        self.ui_ffmpeg_threads = QSpinBox()
+        self.ui_ffmpeg_threads.setRange(0, 32)
+        self.ui_ffmpeg_threads.setToolTip("Cap decoder/encoder threads. 0 leaves ffmpeg default.")
+        g.addWidget(self.ui_ffmpeg_threads, 0, 1)
+        g.addWidget(QLabel("Nice (+priority, Unix):"), 1, 0)
+        self.ui_ffmpeg_nice = QSpinBox()
+        self.ui_ffmpeg_nice.setRange(0, 19)
+        self.ui_ffmpeg_nice.setToolTip("Higher = lower priority vs other processes when CPU is busy.")
+        g.addWidget(self.ui_ffmpeg_nice, 1, 1)
+        g.addWidget(QLabel("CPU limit % (0 = off):"), 2, 0)
+        self.ui_ffmpeg_cpu_limit = QSpinBox()
+        self.ui_ffmpeg_cpu_limit.setRange(0, 100)
+        self.ui_ffmpeg_cpu_limit.setToolTip("Needs cpulimit on PATH. Average CPU cap per encode.")
+        g.addWidget(self.ui_ffmpeg_cpu_limit, 2, 1)
+        lay.addWidget(enc)
+
+        qbox = QGroupBox("Queue — max jobs at once")
+        qg = QGridLayout(qbox)
+        qg.addWidget(QLabel("Parallel downloads:"), 0, 0)
+        self.ui_max_parallel_dl = QSpinBox()
+        self.ui_max_parallel_dl.setRange(1, 32)
+        qg.addWidget(self.ui_max_parallel_dl, 0, 1)
+        qg.addWidget(QLabel("Parallel converts:"), 1, 0)
+        self.ui_max_parallel_cv = QSpinBox()
+        self.ui_max_parallel_cv.setRange(1, 32)
+        qg.addWidget(self.ui_max_parallel_cv, 1, 1)
+        lay.addWidget(qbox)
+
+        hint = QLabel(
+            "Uses the config file path from the Search tab (or the default XDG path if empty). "
+            "Apply updates this session; Save writes merged values into config.toml."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: palette(mid);")
+        lay.addWidget(hint)
+
+        row = QHBoxLayout()
+        apply_btn = QPushButton("Apply to session")
+        apply_btn.clicked.connect(self._apply_session_settings)
+        row.addWidget(apply_btn)
+        save_btn = QPushButton("Save to config file")
+        save_btn.clicked.connect(self._save_settings_to_file)
+        row.addWidget(save_btn)
+        row.addStretch()
+        lay.addLayout(row)
+        lay.addStretch()
         return w
 
     def _update_source_widgets(self) -> None:

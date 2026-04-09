@@ -18,10 +18,6 @@ from video_finder.transcode import transcode
 
 from .progress_util import ytdlp_progress_percent_and_labels
 
-# Cap concurrent network downloads and CPU-heavy ffmpeg encodes.
-MAX_PARALLEL_DOWNLOADS = 4
-MAX_PARALLEL_CONVERTS = 4
-
 
 class SearchWorker(QThread):
     finished_ok = pyqtSignal(list)
@@ -103,7 +99,7 @@ class SearchWorker(QThread):
 
 
 class DownloadService(QObject):
-    """Parallel downloads (up to MAX_PARALLEL_DOWNLOADS) with per-job cancel."""
+    """Parallel downloads with per-job cancel."""
 
     progress = pyqtSignal(str, float, str, str)  # id, pct, speed, eta
     item_done = pyqtSignal(str, str, object)  # id, raw_path str, yinfo
@@ -113,14 +109,26 @@ class DownloadService(QObject):
     def __init__(self, settings: Settings, parent=None) -> None:
         super().__init__(parent)
         self._settings = settings
+        self._max_workers = max(1, min(32, int(settings.max_parallel_downloads)))
         self._executor = ThreadPoolExecutor(
-            max_workers=MAX_PARALLEL_DOWNLOADS,
+            max_workers=self._max_workers,
             thread_name_prefix="vf-dl",
         )
         self._lock = threading.Lock()
         self._pending_cancel: set[str] = set()
         self._abort_events: dict[str, threading.Event] = {}
         self._stopped = False
+
+    def set_max_workers(self, n: int) -> None:
+        """Replace the pool after in-flight work on the old pool finishes (waits)."""
+        n = max(1, min(32, int(n)))
+        with self._lock:
+            if self._stopped or n == self._max_workers:
+                return
+            old = self._executor
+            self._executor = ThreadPoolExecutor(max_workers=n, thread_name_prefix="vf-dl")
+            self._max_workers = n
+        old.shutdown(wait=True, cancel_futures=False)
 
     def cancel_download(self, job_id: str) -> None:
         with self._lock:
@@ -180,7 +188,7 @@ class DownloadService(QObject):
 
 
 class ConvertService(QObject):
-    """Parallel transcodes (up to MAX_PARALLEL_CONVERTS) with per-job cancel."""
+    """Parallel transcodes with per-job cancel."""
 
     progress = pyqtSignal(str, object)  # id, percent float or None for indeterminate
     item_done = pyqtSignal(str)
@@ -191,14 +199,25 @@ class ConvertService(QObject):
         super().__init__(parent)
         self._settings = settings
         self._no_embed = no_embed
+        self._max_workers = max(1, min(32, int(settings.max_parallel_converts)))
         self._executor = ThreadPoolExecutor(
-            max_workers=MAX_PARALLEL_CONVERTS,
+            max_workers=self._max_workers,
             thread_name_prefix="vf-cv",
         )
         self._lock = threading.Lock()
         self._pending_cancel: set[str] = set()
         self._abort_events: dict[str, threading.Event] = {}
         self._stopped = False
+
+    def set_max_workers(self, n: int) -> None:
+        n = max(1, min(32, int(n)))
+        with self._lock:
+            if self._stopped or n == self._max_workers:
+                return
+            old = self._executor
+            self._executor = ThreadPoolExecutor(max_workers=n, thread_name_prefix="vf-cv")
+            self._max_workers = n
+        old.shutdown(wait=True, cancel_futures=False)
 
     def cancel_convert(self, job_id: str) -> None:
         with self._lock:

@@ -59,6 +59,10 @@ h264_level = "3.1"
 preset = "medium"
 # h264_tune = "zerolatency"
 # ffmpeg_threads = 8
+# ffmpeg_nice = 10                  # Unix: nicer ffmpeg (yield CPU to other apps)
+# ffmpeg_cpu_limit_percent = 50     # needs `cpulimit` on PATH; 0 = off
+# max_parallel_downloads = 2        # GUI default 4; concurrent yt-dlp jobs
+# max_parallel_converts = 1           # concurrent ffmpeg encodes in the GUI
 # Optional: NVIDIA — may produce streams some cars dislike; prefer libx264 if USB playback fails.
 # video_encoder = "h264_nvenc"
 # nvenc_preset = "p1"
@@ -129,6 +133,9 @@ video-finder search "query" --use-youtube-api
 
 - **`h264_tune = "zerolatency"`** — tiny **libx264** speed-up, slightly worse compression.
 - **`ffmpeg_threads = 8`** (or your core count) — sometimes helps if ffmpeg/x264 under-uses CPU; **`0`** leaves the default (often fine).
+- **`ffmpeg_nice = 10`** (Unix) — lower scheduling priority so other apps stay responsive; does not cap peak CPU when the machine is idle.
+- **`ffmpeg_cpu_limit_percent = 50`** — soft cap on average CPU via **`cpulimit`** (install on Arch: `pacman -S cpulimit`); **`0`** disables. Ignored if `cpulimit` is not on `PATH`.
+- **`max_parallel_downloads`** / **`max_parallel_converts`** — cap how many downloads or encodes run at once in **`video-finder-ui`** (defaults **4** / **4**). The **Settings** tab can change these and save to `config.toml`.
 
 **Outside this tool**
 

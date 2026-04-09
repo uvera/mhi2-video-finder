@@ -12,6 +12,7 @@ from video_finder.config import (
     build_ffmpeg_video_filter,
     build_ffmpeg_video_filter_vaapi,
     load_settings,
+    save_settings,
 )
 
 
@@ -176,3 +177,25 @@ raw_cache_dir = "{raw.as_posix()}"
     assert s.fps == "24"
     assert s.output_dir == out.resolve()
     assert s.raw_cache_dir == raw.resolve()
+
+
+def test_settings_parallel_defaults() -> None:
+    s = Settings()
+    assert s.max_parallel_downloads == 4
+    assert s.max_parallel_converts == 4
+
+
+def test_save_settings_merges_unknown_keys(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('search_limit = 3\nfoo = 99\n', encoding="utf-8")
+    s = load_settings(cfg)
+    s.max_parallel_downloads = 2
+    s.ffmpeg_nice = 10
+    save_settings(s, cfg)
+    text = cfg.read_text()
+    assert "foo = 99" in text
+    assert "max_parallel_downloads = 2" in text
+    assert "ffmpeg_nice = 10" in text
+    s2 = load_settings(cfg)
+    assert s2.max_parallel_downloads == 2
+    assert s2.ffmpeg_nice == 10

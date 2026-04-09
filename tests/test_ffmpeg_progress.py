@@ -1,12 +1,15 @@
 """Tests for ffmpeg progress parsing."""
 
 from pathlib import Path
+from unittest.mock import patch
 
 from video_finder.ffmpeg_progress import (
     insert_ffmpeg_progress_args,
     insert_ffmpeg_progress_path,
     last_out_time_ms_from_progress_file,
+    prepare_ffmpeg_subprocess_argv,
     update_ffmpeg_progress_from_stderr_line,
+    wrap_ffmpeg_cpulimit,
 )
 
 
@@ -40,6 +43,37 @@ def test_insert_ffmpeg_progress_path(tmp_path: Path) -> None:
     cmd = ["ffmpeg", "-y", "-i", "in.mkv", "out.mp4"]
     out = insert_ffmpeg_progress_path(cmd, prog)
     assert out[0:4] == ["ffmpeg", "-y", "-progress", str(prog)]
+
+
+def test_wrap_ffmpeg_cpulimit_noop_without_binary() -> None:
+    cmd = ["ffmpeg", "-y", "-i", "a", "b"]
+    with patch("video_finder.ffmpeg_progress.shutil.which", return_value=None):
+        assert wrap_ffmpeg_cpulimit(cmd, 50) == cmd
+
+
+def test_wrap_ffmpeg_cpulimit_wraps_when_binary_exists() -> None:
+    cmd = ["ffmpeg", "-y", "-i", "a", "b"]
+    with patch("video_finder.ffmpeg_progress.shutil.which", return_value="/bin/cpulimit"):
+        out = wrap_ffmpeg_cpulimit(cmd, 50)
+        assert out[:5] == ["/bin/cpulimit", "-z", "-l", "50", "--"]
+        assert out[5:] == cmd
+
+
+def test_prepare_ffmpeg_subprocess_argv_cpu_limit() -> None:
+    cmd = ["ffmpeg", "-y", "-i", "a", "b"]
+    with patch("video_finder.ffmpeg_progress.shutil.which") as w:
+        def _which(name: str) -> str | None:
+            if name == "cpulimit":
+                return "/x/cpulimit"
+            if name == "stdbuf":
+                return None
+            return None
+
+        w.side_effect = _which
+        argv, pre = prepare_ffmpeg_subprocess_argv(cmd, nice_delta=0, cpu_limit_percent=40)
+        assert argv[:5] == ["/x/cpulimit", "-z", "-l", "40", "--"]
+        assert argv[5:] == cmd
+        assert pre is None
 
 
 def test_stderr_duration_and_time_like_ffmpeg_vaapi() -> None:
