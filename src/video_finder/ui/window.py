@@ -33,6 +33,13 @@ from video_finder.search import VideoCandidate
 from video_finder.workflow import ensure_output_dir, safe_stem, unique_out_path
 
 from .job_store import JobStore
+
+# Stored in QComboBox userData; must match config ``video_encoder`` values.
+_ENCODER_CHOICES: tuple[tuple[str, str], ...] = (
+    ("libx264 (CPU — best for picky car USB / MHI2)", "libx264"),
+    ("h264_vaapi (Intel / AMD GPU)", "h264_vaapi"),
+    ("h264_nvenc (NVIDIA GPU)", "h264_nvenc"),
+)
 from .models import UiJob
 from .workers import ConvertService, DownloadService, SearchWorker, new_job_id
 
@@ -145,6 +152,17 @@ class MainWindow(QWidget):
                         no_embed=job.no_embed,
                     )
 
+    @staticmethod
+    def _canonical_video_encoder(enc: str) -> str:
+        e = (enc or "").strip().lower()
+        if e == "vaapi":
+            return "h264_vaapi"
+        if e == "nvenc":
+            return "h264_nvenc"
+        if e in ("h264_vaapi", "h264_nvenc", "libx264"):
+            return e
+        return "libx264"
+
     def _apply_settings_to_widgets(self) -> None:
         self.limit_spin.setValue(self._settings.search_limit if self._settings.search_limit else 15)
         self.ui_ffmpeg_threads.setValue(max(0, min(32, self._settings.ffmpeg_threads)))
@@ -153,12 +171,42 @@ class MainWindow(QWidget):
         self.ui_max_parallel_dl.setValue(max(1, min(32, self._settings.max_parallel_downloads)))
         self.ui_max_parallel_cv.setValue(max(1, min(32, self._settings.max_parallel_converts)))
 
+        want_enc = self._canonical_video_encoder(self._settings.video_encoder)
+        idx = 0
+        for i in range(self.ui_video_encoder.count()):
+            if self.ui_video_encoder.itemData(i) == want_enc:
+                idx = i
+                break
+        self.ui_video_encoder.blockSignals(True)
+        self.ui_video_encoder.setCurrentIndex(idx)
+        self.ui_video_encoder.blockSignals(False)
+        self.ui_embed_metadata.setChecked(self._settings.embed_metadata)
+        self.ui_embed_album_art.setChecked(self._settings.embed_album_art)
+        self.ui_vaapi_device.setText((self._settings.vaapi_device or "").strip())
+        self.ui_vaapi_cbr.setChecked(self._settings.vaapi_cbr)
+        self._update_vaapi_options_visibility()
+
     def _sync_widgets_to_settings(self) -> None:
         self._settings.ffmpeg_threads = self.ui_ffmpeg_threads.value()
         self._settings.ffmpeg_nice = self.ui_ffmpeg_nice.value()
         self._settings.ffmpeg_cpu_limit_percent = self.ui_ffmpeg_cpu_limit.value()
         self._settings.max_parallel_downloads = self.ui_max_parallel_dl.value()
         self._settings.max_parallel_converts = self.ui_max_parallel_cv.value()
+        data = self.ui_video_encoder.currentData()
+        self._settings.video_encoder = data if isinstance(data, str) else "libx264"
+        self._settings.embed_metadata = self.ui_embed_metadata.isChecked()
+        self._settings.embed_album_art = self.ui_embed_album_art.isChecked()
+        dev = self.ui_vaapi_device.text().strip()
+        self._settings.vaapi_device = dev if dev else "/dev/dri/renderD128"
+        self._settings.vaapi_cbr = self.ui_vaapi_cbr.isChecked()
+
+    def _update_vaapi_options_visibility(self) -> None:
+        data = self.ui_video_encoder.currentData()
+        enc = data if isinstance(data, str) else "libx264"
+        self._vaapi_frame.setVisible(enc in ("h264_vaapi", "vaapi"))
+
+    def _on_video_encoder_changed(self, _index: int) -> None:
+        self._update_vaapi_options_visibility()
 
     def _settings_config_target(self) -> Path:
         t = self.config_edit.text().strip()
@@ -166,12 +214,15 @@ class MainWindow(QWidget):
 
     def _apply_session_settings(self) -> None:
         self._sync_widgets_to_settings()
+        self._dl.set_settings(self._settings)
+        self._cv.set_settings(self._settings)
         self._dl.set_max_workers(self._settings.max_parallel_downloads)
         self._cv.set_max_workers(self._settings.max_parallel_converts)
         QMessageBox.information(
             self,
             "Settings",
-            "Applied for this session. New encodes use the FFmpeg limits; queue width is updated.",
+            "Applied for this session. New encodes use the encoder, embed options, FFmpeg limits, "
+            "and queue width from this tab.",
         )
 
     def _save_settings_to_file(self) -> None:
@@ -192,11 +243,13 @@ class MainWindow(QWidget):
         self._config_path = p
         self._settings = load_settings(p)
         self._apply_settings_to_widgets()
-        # Recreate services with new cache paths — simplest: restart app message
+        self._dl.set_settings(self._settings)
+        self._cv.set_settings(self._settings)
         QMessageBox.information(
             self,
             "Settings",
-            "Config reloaded for new searches. Restart the app if download paths should change mid-session.",
+            "Config reloaded. Encode options and paths apply to new work; restart the app if something "
+            "still looks stale.",
         )
 
     def _build_search_tab(self) -> QWidget:
@@ -287,6 +340,39 @@ class MainWindow(QWidget):
         w = QWidget()
         lay = QVBoxLayout(w)
 
+        out_box = QGroupBox("Output encoding (car USB / MHI2)")
+        og = QGridLayout(out_box)
+        og.addWidget(QLabel("Video encoder:"), 0, 0)
+        self.ui_video_encoder = QComboBox()
+        for label, data in _ENCODER_CHOICES:
+            self.ui_video_encoder.addItem(label, data)
+        self.ui_video_encoder.setToolTip(
+            "libx264 usually matches strict H.264 baseline streams best. "
+            "GPU encoders are faster but some car systems play them worse."
+        )
+        self.ui_video_encoder.currentIndexChanged.connect(self._on_video_encoder_changed)
+        og.addWidget(self.ui_video_encoder, 0, 1)
+        self.ui_embed_metadata = QCheckBox("Embed title / artist / album metadata (from yt-dlp)")
+        self.ui_embed_metadata.setToolTip("When unchecked, ffmpeg skips -metadata tags from the download info.")
+        og.addWidget(self.ui_embed_metadata, 1, 0, 1, 2)
+        self.ui_embed_album_art = QCheckBox("Embed album art (adds MJPEG attached-picture stream)")
+        self.ui_embed_album_art.setToolTip(
+            "Adds a second video track for cover art. Turn off if a player stutters or misbehaves."
+        )
+        og.addWidget(self.ui_embed_album_art, 2, 0, 1, 2)
+        self._vaapi_frame = QWidget()
+        vf = QGridLayout(self._vaapi_frame)
+        vf.setContentsMargins(0, 0, 0, 0)
+        vf.addWidget(QLabel("VAAPI render node:"), 0, 0)
+        self.ui_vaapi_device = QLineEdit()
+        self.ui_vaapi_device.setPlaceholderText("/dev/dri/renderD128")
+        vf.addWidget(self.ui_vaapi_device, 0, 1)
+        self.ui_vaapi_cbr = QCheckBox("VAAPI constant bitrate (CBR)")
+        self.ui_vaapi_cbr.setToolTip("Steadier bitrate; can help picky USB decoders when using VAAPI.")
+        vf.addWidget(self.ui_vaapi_cbr, 1, 0, 1, 2)
+        og.addWidget(self._vaapi_frame, 3, 0, 1, 2)
+        lay.addWidget(out_box)
+
         enc = QGroupBox("FFmpeg / CPU")
         g = QGridLayout(enc)
         g.addWidget(QLabel("ffmpeg -threads (0 = default):"), 0, 0)
@@ -320,7 +406,8 @@ class MainWindow(QWidget):
 
         hint = QLabel(
             "Uses the config file path from the Search tab (or the default XDG path if empty). "
-            "Apply updates this session; Save writes merged values into config.toml."
+            "Apply updates workers for this session; Save writes merged values into config.toml "
+            "(video_encoder, embed_metadata, embed_album_art, vaapi_*, ffmpeg_*, parallel queues)."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: palette(mid);")
@@ -499,6 +586,61 @@ class MainWindow(QWidget):
         lay.addWidget(self.convert_table)
         return w
 
+    @staticmethod
+    def _row_index_for_job_id(table: QTableWidget, job_id: str) -> int:
+        for i in range(table.rowCount()):
+            it = table.item(i, 0)
+            if it is not None and it.data(Qt.ItemDataRole.UserRole) == job_id:
+                return i
+        return -1
+
+    @staticmethod
+    def _set_table_text(table: QTableWidget, row: int, col: int, text: str) -> None:
+        it = table.item(row, col)
+        if it is None:
+            it = QTableWidgetItem(text)
+            table.setItem(row, col, it)
+        else:
+            it.setText(text)
+
+    def _downloads_status_progress_speed(self, job: UiJob) -> tuple[str, str, str]:
+        st = job.download_status
+        if st == "downloading":
+            detail = "Downloading"
+        elif st == "queued":
+            detail = "Queued"
+        elif st == "failed":
+            detail = job.download_error or "Failed"
+        elif st == "cancelled":
+            detail = "Cancelled"
+        else:
+            detail = st
+        pct = job.download_percent
+        if pct < 0:
+            prog_txt = "—" if st != "downloading" else "…"
+        else:
+            prog_txt = f"{pct:.1f}%"
+        extra = f"{job.download_speed}  {job.download_eta}".strip()
+        return detail, prog_txt, extra
+
+    def _convert_status_progress(self, job: UiJob) -> tuple[str, str]:
+        st = job.convert_status
+        if st == "converting":
+            detail = "Converting"
+        elif st in ("queued", "waiting"):
+            detail = "Queued"
+        elif st == "failed":
+            detail = job.convert_error or "Failed"
+        elif st == "cancelled":
+            detail = "Cancelled"
+        else:
+            detail = st
+        if job.convert_indeterminate:
+            prog_txt = "…"
+        else:
+            prog_txt = f"{job.convert_percent:.1f}%"
+        return detail, prog_txt
+
     def _refresh_downloads_table(self) -> None:
         rows = [self._jobs[j] for j in self._job_order if self._jobs[j].download_status != "done"]
         self.downloads_table.setRowCount(len(rows))
@@ -506,26 +648,10 @@ class MainWindow(QWidget):
             title_it = QTableWidgetItem(job.candidate.title)
             title_it.setData(Qt.ItemDataRole.UserRole, job.job_id)
             self.downloads_table.setItem(i, 0, title_it)
-            st = job.download_status
-            if st == "downloading":
-                detail = "Downloading"
-            elif st == "queued":
-                detail = "Queued"
-            elif st == "failed":
-                detail = job.download_error or "Failed"
-            elif st == "cancelled":
-                detail = "Cancelled"
-            else:
-                detail = st
-            self.downloads_table.setItem(i, 1, QTableWidgetItem(detail))
-            pct = job.download_percent
-            if pct < 0:
-                prog_txt = "—" if st != "downloading" else "…"
-            else:
-                prog_txt = f"{pct:.1f}%"
-            self.downloads_table.setItem(i, 2, QTableWidgetItem(prog_txt))
-            extra = f"{job.download_speed}  {job.download_eta}".strip()
-            self.downloads_table.setItem(i, 3, QTableWidgetItem(extra))
+            d1, d2, d3 = self._downloads_status_progress_speed(job)
+            self.downloads_table.setItem(i, 1, QTableWidgetItem(d1))
+            self.downloads_table.setItem(i, 2, QTableWidgetItem(d2))
+            self.downloads_table.setItem(i, 3, QTableWidgetItem(d3))
             self.downloads_table.setCellWidget(i, 4, self._download_actions_widget(job))
 
     def _download_actions_widget(self, job: UiJob) -> QWidget:
@@ -553,24 +679,29 @@ class MainWindow(QWidget):
             title_it = QTableWidgetItem(job.candidate.title)
             title_it.setData(Qt.ItemDataRole.UserRole, job.job_id)
             self.convert_table.setItem(i, 0, title_it)
-            st = job.convert_status
-            if st == "converting":
-                detail = "Converting"
-            elif st in ("queued", "waiting"):
-                detail = "Queued"
-            elif st == "failed":
-                detail = job.convert_error or "Failed"
-            elif st == "cancelled":
-                detail = "Cancelled"
-            else:
-                detail = st
-            self.convert_table.setItem(i, 1, QTableWidgetItem(detail))
-            if job.convert_indeterminate:
-                prog_txt = "…"
-            else:
-                prog_txt = f"{job.convert_percent:.1f}%"
-            self.convert_table.setItem(i, 2, QTableWidgetItem(prog_txt))
+            d1, d2 = self._convert_status_progress(job)
+            self.convert_table.setItem(i, 1, QTableWidgetItem(d1))
+            self.convert_table.setItem(i, 2, QTableWidgetItem(d2))
             self.convert_table.setCellWidget(i, 3, self._convert_actions_widget(job))
+
+    def _update_downloads_row_cells(self, job: UiJob) -> None:
+        row = self._row_index_for_job_id(self.downloads_table, job.job_id)
+        if row < 0:
+            self._refresh_downloads_table()
+            return
+        d1, d2, d3 = self._downloads_status_progress_speed(job)
+        self._set_table_text(self.downloads_table, row, 1, d1)
+        self._set_table_text(self.downloads_table, row, 2, d2)
+        self._set_table_text(self.downloads_table, row, 3, d3)
+
+    def _update_convert_row_cells(self, job: UiJob) -> None:
+        row = self._row_index_for_job_id(self.convert_table, job.job_id)
+        if row < 0:
+            self._refresh_convert_table()
+            return
+        d1, d2 = self._convert_status_progress(job)
+        self._set_table_text(self.convert_table, row, 1, d1)
+        self._set_table_text(self.convert_table, row, 2, d2)
 
     def _convert_actions_widget(self, job: UiJob) -> QWidget:
         w = QWidget()
@@ -646,7 +777,7 @@ class MainWindow(QWidget):
         job.download_percent = pct
         job.download_speed = speed
         job.download_eta = eta
-        self._refresh_downloads_table()
+        self._update_downloads_row_cells(job)
 
     def _on_dl_done(self, job_id: str, raw_path: str, yinfo: object) -> None:
         job = self._jobs.get(job_id)
@@ -700,7 +831,7 @@ class MainWindow(QWidget):
         else:
             job.convert_indeterminate = False
             job.convert_percent = float(pct)
-        self._refresh_convert_table()
+        self._update_convert_row_cells(job)
 
     def _on_cv_done(self, job_id: str) -> None:
         job = self._jobs.get(job_id)

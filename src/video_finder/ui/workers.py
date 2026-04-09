@@ -119,6 +119,9 @@ class DownloadService(QObject):
         self._abort_events: dict[str, threading.Event] = {}
         self._stopped = False
 
+    def set_settings(self, settings: Settings) -> None:
+        self._settings = settings
+
     def set_max_workers(self, n: int) -> None:
         """Replace the pool after in-flight work on the old pool finishes (waits)."""
         n = max(1, min(32, int(n)))
@@ -208,6 +211,9 @@ class ConvertService(QObject):
         self._pending_cancel: set[str] = set()
         self._abort_events: dict[str, threading.Event] = {}
         self._stopped = False
+
+    def set_settings(self, settings: Settings) -> None:
+        self._settings = settings
 
     def set_max_workers(self, n: int) -> None:
         n = max(1, min(32, int(n)))
