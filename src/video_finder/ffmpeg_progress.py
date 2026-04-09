@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -18,6 +20,27 @@ _DURATION_RE = re.compile(
 )
 # Encoding stats line (e.g. "time=00:00:35.44 bitrate=...")
 _TIME_STAT_RE = re.compile(r"\btime=(\d{1,2}):(\d{2}):(\d{2}\.\d+)\b")
+
+
+def _ffmpeg_binary_name(argv0: str) -> str:
+    return os.path.basename(argv0)
+
+
+def wrap_ffmpeg_line_buffered_stderr(cmd: list[str]) -> list[str]:
+    """Prepend GNU ``stdbuf`` so ffmpeg flushes stderr after each stats line (pipe-safe).
+
+    Without this, libc often fully buffers stderr when not a TTY and progress stays at 0%%.
+    """
+    if len(cmd) < 1:
+        return cmd
+    if _ffmpeg_binary_name(cmd[0]) != "ffmpeg":
+        return cmd
+    if os.name == "nt":
+        return cmd
+    stdbuf = shutil.which("stdbuf")
+    if not stdbuf:
+        return cmd
+    return [stdbuf, "-eL", "-oL", cmd[0], *cmd[1:]]
 
 
 def ffprobe_duration_ms(path: Path) -> int | None:
@@ -144,10 +167,11 @@ def run_ffmpeg_with_progress(
     """Run ffmpeg; progress from stderr ``time=`` vs stream ``DURATION`` (and ffprobe fallback).
 
     Matches on-screen ffmpeg stats (same as ``time=`` / metadata duration). Emits at most **99%**
-    on success so callers can reserve **100%** for follow-up work (e.g. album art).
+    on     success so callers can reserve **100%** for follow-up work (e.g. album art).
     """
+    launch_cmd = wrap_ffmpeg_line_buffered_stderr(list(cmd))
     proc = subprocess.Popen(
-        cmd,
+        launch_cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=False,
@@ -162,12 +186,27 @@ def run_ffmpeg_with_progress(
     def _stderr_reader() -> None:
         if proc.stderr is None:
             return
+        buf = bytearray()
         try:
-            for raw in iter(proc.stderr.readline, b""):
-                stderr_chunks.append(raw)
-                line = raw.decode("utf-8", errors="replace")
+            while True:
+                chunk = proc.stderr.read(4096)
+                if not chunk:
+                    break
+                stderr_chunks.append(chunk)
+                buf.extend(chunk)
+                while True:
+                    nl = buf.find(b"\n")
+                    if nl < 0:
+                        break
+                    line = bytes(buf[: nl + 1])
+                    del buf[: nl + 1]
+                    text = line.decode("utf-8", errors="replace")
+                    with lock:
+                        update_ffmpeg_progress_from_stderr_line(state, text)
+            if buf:
+                text = buf.decode("utf-8", errors="replace")
                 with lock:
-                    update_ffmpeg_progress_from_stderr_line(state, line)
+                    update_ffmpeg_progress_from_stderr_line(state, text)
         finally:
             try:
                 proc.stderr.close()
@@ -215,5 +254,5 @@ def run_ffmpeg_with_progress(
 
     if rc_final != 0:
         err = b"".join(stderr_chunks).decode("utf-8", errors="replace")
-        raise subprocess.CalledProcessError(rc_final, cmd, stderr=err.encode())
+        raise subprocess.CalledProcessError(rc_final, launch_cmd, stderr=err.encode())
     on_progress(99.0)
