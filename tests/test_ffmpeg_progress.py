@@ -4,6 +4,7 @@ from pathlib import Path
 
 from video_finder.ffmpeg_progress import (
     insert_ffmpeg_progress_args,
+    insert_ffmpeg_progress_path,
     last_out_time_ms_from_progress_file,
     update_ffmpeg_progress_from_stderr_line,
 )
@@ -21,8 +22,24 @@ def test_insert_ffmpeg_progress_args(tmp_path: Path) -> None:
 
 def test_last_out_time_ms_from_progress_file(tmp_path: Path) -> None:
     f = tmp_path / "ff.txt"
-    f.write_text("foo=1\nout_time_ms=5000\nbar=2\nout_time_ms=9000\n", encoding="utf-8")
+    f.write_text(
+        "foo=1\nout_time_ms=5000\nbar=2\nout_time=00:00:09.000000\n",
+        encoding="utf-8",
+    )
     assert last_out_time_ms_from_progress_file(f) == 9000
+
+
+def test_last_out_time_ms_from_progress_file_microseconds(tmp_path: Path) -> None:
+    f = tmp_path / "ff.txt"
+    f.write_text("out_time_ms=19840000\n", encoding="utf-8")
+    assert last_out_time_ms_from_progress_file(f) == 19840
+
+
+def test_insert_ffmpeg_progress_path(tmp_path: Path) -> None:
+    prog = tmp_path / "p.txt"
+    cmd = ["ffmpeg", "-y", "-i", "in.mkv", "out.mp4"]
+    out = insert_ffmpeg_progress_path(cmd, prog)
+    assert out[0:4] == ["ffmpeg", "-y", "-progress", str(prog)]
 
 
 def test_stderr_duration_and_time_like_ffmpeg_vaapi() -> None:
