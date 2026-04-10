@@ -11,3 +11,9 @@ pacman/pkg/
 pacman/src/
 pacman/*.pkg.tar.zst
 pacman/*.pkg.tar.zst.sig
+
+# makepkg from aur/PKGBUILD (release-github-aur.sh)
+aur/pkg/
+aur/src/
+aur/*.pkg.tar.zst
+aur/*.pkg.tar.zst.sig

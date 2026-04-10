@@ -8,11 +8,12 @@
 # so the GitHub archive content/hash does not change when only aur/ metadata is updated.
 #
 # Environment (optional):
-#   SKIP_BUILD=1          — skip python -m build (wheel + sdist)
-#   SKIP_TAG_PUSH=1       — do not create/push tag
-#   SKIP_AUR_REFRESH=1    — only tag push / release
-#   SKIP_GH_RELEASE=1     — do not create GitHub release
-#   ALLOW_DIRTY=1         — allow uncommitted changes
+#   SKIP_BUILD=1            — skip python -m build (wheel + sdist)
+#   SKIP_PACMAN_PACKAGE=1   — skip makepkg; GitHub release gets wheel + sdist only
+#   SKIP_TAG_PUSH=1         — do not create/push tag
+#   SKIP_AUR_REFRESH=1      — only tag push / release (pacman built from pacman/PKGBUILD)
+#   SKIP_GH_RELEASE=1       — do not create GitHub release
+#   ALLOW_DIRTY=1           — allow uncommitted changes
 #   GITHUB_REPOSITORY=owner/repo — override GitHub slug
 #
 set -euo pipefail
@@ -123,6 +124,68 @@ PY
 	echo "Updated aur/PKGBUILD and aur/.SRCINFO (pkgrel=${pkgrel}, sha256=${sum})."
 }
 
+sync_pacman_pkgver_from_pyproject() {
+	VERSION="$VERSION" ROOT="$ROOT" "$PY" <<'PY'
+import os
+import re
+from pathlib import Path
+
+root = Path(os.environ["ROOT"])
+ver = os.environ["VERSION"]
+pb = root / "pacman" / "PKGBUILD"
+text = pb.read_text()
+text = re.sub(r"^pkgver=.*$", f"pkgver={ver}", text, count=1, flags=re.M)
+text = re.sub(r"^pkgrel=.*$", "pkgrel=1", text, count=1, flags=re.M)
+pb.write_text(text)
+PY
+	echo "Synced pacman/PKGBUILD pkgver to ${VERSION}."
+}
+
+build_arch_package() {
+	# Produces mhi2-video-finder-*.pkg.tar.zst for GitHub release assets.
+	local workdir makepkg_flags=( -f --noconfirm )
+	if makepkg --help 2>&1 | grep -q -- --nosign; then
+		makepkg_flags+=( --nosign )
+	fi
+
+	if [[ "${SKIP_AUR_REFRESH:-0}" != "1" ]]; then
+		workdir="$ROOT/aur"
+	else
+		sync_pacman_pkgver_from_pyproject
+		workdir="$ROOT/pacman"
+	fi
+
+	rm -rf "${workdir}/pkg" "${workdir}/src"
+	rm -f "${workdir}"/*.pkg.tar.zst "${workdir}"/*.pkg.tar.zst.sig 2>/dev/null || true
+
+	if command -v makepkg >/dev/null 2>&1; then
+		( cd "$workdir" && makepkg "${makepkg_flags[@]}" )
+	else
+		if ! command -v docker >/dev/null 2>&1; then
+			die "Need makepkg (Arch) or Docker to build .pkg.tar.zst, or set SKIP_PACMAN_PACKAGE=1"
+		fi
+		echo "makepkg not found; building .pkg.tar.zst via Docker (archlinux)…"
+		local rel
+		rel="${workdir#"$ROOT"/}"
+		docker run --rm \
+			-v "${ROOT}:/repo:rw" \
+			-w "/repo/${rel}" \
+			archlinux/archlinux:latest \
+			bash -lc 'set -euo pipefail
+pacman-key --init >/dev/null 2>&1 || true
+pacman -Sy --noconfirm archlinux-keyring pacman >/dev/null
+pacman -S --noconfirm --needed base-devel python python-build python-installer python-setuptools python-wheel git >/dev/null
+rm -rf pkg src
+rm -f ./*.pkg.tar.zst ./*.pkg.tar.zst.sig 2>/dev/null || true
+makepkg -f --noconfirm --nosign'
+	fi
+
+	local newest
+	newest="$(ls -1t "${workdir}"/*.pkg.tar.zst 2>/dev/null | head -1 || true)"
+	[[ -n "$newest" && -f "$newest" ]] || die "makepkg did not produce a .pkg.tar.zst under ${workdir}"
+	echo "$newest"
+}
+
 if ! command -v gh >/dev/null 2>&1; then
 	die "install GitHub CLI (gh) and run: gh auth login"
 fi
@@ -182,12 +245,31 @@ if [[ "${SKIP_AUR_REFRESH:-0}" != "1" ]]; then
 	fi
 fi
 
+PKGFILE=""
+if [[ "${SKIP_GH_RELEASE:-0}" != "1" ]] && [[ "${SKIP_PACMAN_PACKAGE:-0}" != "1" ]]; then
+	echo "Building Arch Linux package (.pkg.tar.zst) for GitHub release…"
+	PKGFILE="$(build_arch_package)"
+	echo "Built: ${PKGFILE}"
+fi
+
 if [[ "${SKIP_GH_RELEASE:-0}" != "1" ]]; then
+	shopt -s nullglob
+	local_assets=( "$ROOT"/dist/*.whl "$ROOT"/dist/*.tar.gz )
+	shopt -u nullglob
+	release_files=( "${local_assets[@]}" )
+	if [[ -n "$PKGFILE" ]]; then
+		release_files+=( "$PKGFILE" )
+	fi
+	if [[ ${#release_files[@]} -eq 0 ]]; then
+		die "nothing to upload (dist/ is empty and pacman package was skipped or failed)"
+	fi
+
 	if gh release view "${TAG}" >/dev/null 2>&1; then
-		echo "Release ${TAG} already exists."
+		echo "Release ${TAG} already exists; uploading assets…"
+		gh release upload "${TAG}" "${release_files[@]}" --clobber
 	else
-		gh release create "${TAG}" --title "mhi2-video-finder ${VERSION}" --generate-notes
-		echo "Published GitHub release ${TAG}."
+		gh release create "${TAG}" --title "mhi2-video-finder ${VERSION}" --generate-notes "${release_files[@]}"
+		echo "Published GitHub release ${TAG} with ${#release_files[@]} file(s)."
 	fi
 fi
 
