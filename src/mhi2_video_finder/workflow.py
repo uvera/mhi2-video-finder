@@ -5,9 +5,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from video_finder.config import Settings
-from video_finder.search import VideoCandidate, format_mv_query, search_youtube
-from video_finder.youtube_api import search_music_videos
+from mhi2_video_finder.config import Settings
+from mhi2_video_finder.search import VideoCandidate, format_mv_query, search_youtube
+from mhi2_video_finder.youtube_api import search_music_videos
 
 
 def fmt_duration(seconds: int | None) -> str:

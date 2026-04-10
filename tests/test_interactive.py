@@ -1,6 +1,6 @@
 """Tests for interactive pick parsing helpers."""
 
-from video_finder.workflow import parse_multi_pick, slug_dir_name
+from mhi2_video_finder.workflow import parse_multi_pick, slug_dir_name
 
 
 def test_parse_multi_pick_single() -> None:

@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
-# Push git tag v<version>, fetch GitHub source tarball SHA-256, refresh aur/PKGBUILD + aur/.SRCINFO.
-# Requires: git, gh (authenticated), curl, sha256sum. Regenerates .SRCINFO with makepkg or Docker.
+# Build wheel+sdist, push git tag v<version>, fetch GitHub source tarball SHA-256, refresh
+# aur/PKGBUILD + aur/.SRCINFO, commit/push AUR metadata when it changes, create GitHub release.
+# Requires: git, gh (authenticated), curl, sha256sum, Python build deps (see scripts/package-release.sh).
+# Regenerates .SRCINFO with makepkg or Docker.
 #
 # The tag may be force-moved to the AUR checksum commit; keep aur/ in .gitattributes export-ignore
 # so the GitHub archive content/hash does not change when only aur/ metadata is updated.
 #
+# The GitHub release .pkg.tar.zst is built from pacman/PKGBUILD (local tree), not aur/PKGBUILD.
+# Building from aur/ after a tag move can fail sha256 verification against the GitHub tarball.
+#
 # Environment (optional):
-#   SKIP_TAG_PUSH=1       — do not create/push tag
-#   SKIP_AUR_REFRESH=1    — only tag push / release
-#   SKIP_GH_RELEASE=1     — do not create GitHub release
-#   ALLOW_DIRTY=1         — allow uncommitted changes
+#   SKIP_BUILD=1            — skip python -m build (wheel + sdist)
+#   SKIP_PACMAN_PACKAGE=1   — skip makepkg; GitHub release gets wheel + sdist only
+#   SKIP_TAG_PUSH=1         — do not create/push tag
+#   SKIP_AUR_REFRESH=1      — skip AUR metadata refresh (tag push / release / pacman still run)
+#   SKIP_GH_RELEASE=1       — do not create GitHub release
+#   ALLOW_DIRTY=1           — allow uncommitted changes
 #   GITHUB_REPOSITORY=owner/repo — override GitHub slug
 #
 set -euo pipefail
@@ -120,6 +127,51 @@ PY
 	echo "Updated aur/PKGBUILD and aur/.SRCINFO (pkgrel=${pkgrel}, sha256=${sum})."
 }
 
+verify_pacman_pkgver_matches_pyproject() {
+	local pv
+	pv="$(grep -m1 '^pkgver=' "$ROOT/pacman/PKGBUILD" | sed -E 's/^pkgver=([0-9.]+).*/\1/')"
+	[[ "$pv" == "$VERSION" ]] || die "pacman/PKGBUILD pkgver (${pv}) must match pyproject.toml (${VERSION})"
+}
+
+build_arch_package() {
+	# Produces mhi2-video-finder-*.pkg.tar.zst from the git checkout (pacman/PKGBUILD), not aur/.
+	verify_pacman_pkgver_matches_pyproject
+	local workdir="$ROOT/pacman"
+	local makepkg_flags=( -f --noconfirm )
+	if makepkg --help 2>&1 | grep -q -- --nosign; then
+		makepkg_flags+=( --nosign )
+	fi
+
+	rm -rf "${workdir}/pkg" "${workdir}/src"
+	rm -f "${workdir}"/*.pkg.tar.zst "${workdir}"/*.pkg.tar.zst.sig 2>/dev/null || true
+
+	if command -v makepkg >/dev/null 2>&1; then
+		# makepkg prints to stdout; keep stdout clean for PKGFILE="$(build_arch_package)" capture.
+		( cd "$workdir" && makepkg "${makepkg_flags[@]}" ) >&2
+	else
+		if ! command -v docker >/dev/null 2>&1; then
+			die "Need makepkg (Arch) or Docker to build .pkg.tar.zst, or set SKIP_PACMAN_PACKAGE=1"
+		fi
+		echo "makepkg not found; building .pkg.tar.zst via Docker (archlinux)…"
+		docker run --rm \
+			-v "${ROOT}:/repo:rw" \
+			-w /repo/pacman \
+			archlinux/archlinux:latest \
+			bash -lc 'set -euo pipefail
+pacman-key --init >/dev/null 2>&1 || true
+pacman -Sy --noconfirm archlinux-keyring pacman >/dev/null
+pacman -S --noconfirm --needed base-devel python python-build python-installer python-setuptools python-wheel git >/dev/null
+rm -rf pkg src
+rm -f ./*.pkg.tar.zst ./*.pkg.tar.zst.sig 2>/dev/null || true
+makepkg -f --noconfirm --nosign' >&2
+	fi
+
+	local newest
+	newest="$(ls -1t "${workdir}"/*.pkg.tar.zst 2>/dev/null | head -1 || true)"
+	[[ -n "$newest" && -f "$newest" ]] || die "makepkg did not produce a .pkg.tar.zst under ${workdir}"
+	echo "$newest"
+}
+
 if ! command -v gh >/dev/null 2>&1; then
 	die "install GitHub CLI (gh) and run: gh auth login"
 fi
@@ -136,6 +188,13 @@ if [[ "${SKIP_AUR_REFRESH:-0}" != "1" ]]; then
 	if git archive --format=tar HEAD 2>/dev/null | tar tf - | grep -qE '^aur/'; then
 		die "aur/ is included in git archive — add 'aur/ export-ignore' to .gitattributes"
 	fi
+fi
+
+if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+	echo "Clearing dist/ (avoids uploading stale wheels/sdists from older versions)…"
+	rm -f "$ROOT/dist"/*.whl "$ROOT/dist"/*.tar.gz 2>/dev/null || true
+	echo "Building wheel and sdist…"
+	bash "$ROOT/scripts/package-release.sh"
 fi
 
 if [[ "${SKIP_TAG_PUSH:-0}" != "1" ]]; then
@@ -174,17 +233,38 @@ if [[ "${SKIP_AUR_REFRESH:-0}" != "1" ]]; then
 	fi
 fi
 
+PKGFILE=""
+if [[ "${SKIP_GH_RELEASE:-0}" != "1" ]] && [[ "${SKIP_PACMAN_PACKAGE:-0}" != "1" ]]; then
+	echo "Building Arch Linux package (.pkg.tar.zst) for GitHub release…"
+	PKGFILE="$(build_arch_package)"
+	echo "Built: ${PKGFILE}"
+fi
+
 if [[ "${SKIP_GH_RELEASE:-0}" != "1" ]]; then
+	# Only this version (not dist/*.whl, which would upload stale releases and stray names).
+	shopt -s nullglob
+	dist_wheels=( "$ROOT/dist/mhi2_video_finder-${VERSION}"*.whl )
+	shopt -u nullglob
+	dist_sdist="$ROOT/dist/mhi2_video_finder-${VERSION}.tar.gz"
+	if [[ ${#dist_wheels[@]} -eq 0 ]] || [[ ! -f "$dist_sdist" ]]; then
+		die "missing dist artifacts for ${VERSION}: want mhi2_video_finder-${VERSION}*.whl and mhi2_video_finder-${VERSION}.tar.gz (re-run without SKIP_BUILD=1?)"
+	fi
+	release_files=( "${dist_wheels[@]}" "$dist_sdist" )
+	if [[ -n "$PKGFILE" ]]; then
+		release_files+=( "$PKGFILE" )
+	fi
+
 	if gh release view "${TAG}" >/dev/null 2>&1; then
-		echo "Release ${TAG} already exists."
+		echo "Release ${TAG} already exists; uploading assets…"
+		gh release upload "${TAG}" --clobber -- "${release_files[@]}"
 	else
-		gh release create "${TAG}" --title "video-finder ${VERSION}" --generate-notes
-		echo "Published GitHub release ${TAG}."
+		gh release create "${TAG}" --title "mhi2-video-finder ${VERSION}" --generate-notes -- "${release_files[@]}"
+		echo "Published GitHub release ${TAG} with ${#release_files[@]} file(s)."
 	fi
 fi
 
 echo ""
 echo "Done."
 if [[ "${SKIP_AUR_REFRESH:-0}" != "1" ]]; then
-	echo "AUR: copy aur/PKGBUILD and aur/.SRCINFO into ssh://aur@aur.archlinux.org/video-finder.git (or your package name), then push."
+	echo "AUR: copy aur/PKGBUILD and aur/.SRCINFO into ssh://aur@aur.archlinux.org/mhi2-video-finder.git (or your package name), then push."
 fi

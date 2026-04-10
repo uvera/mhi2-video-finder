@@ -11,7 +11,8 @@ from typing import Any
 from urllib.error import URLError, HTTPError
 from urllib.request import Request, urlopen
 
-from video_finder.ffmpeg_progress import prepare_ffmpeg_subprocess_argv
+from mhi2_video_finder import __version__
+from mhi2_video_finder.ffmpeg_progress import prepare_ffmpeg_subprocess_argv
 
 # ffmpeg / iTunes-style keys (MP4)
 _FFMPEG_META_KEYS = (
@@ -124,7 +125,7 @@ def best_thumbnail_url(info: dict[str, Any]) -> str | None:
 
 def download_thumbnail(url: str, dest: Path, timeout: float = 30.0) -> bool:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    req = Request(url, headers={"User-Agent": "video-finder/1.0"})
+    req = Request(url, headers={"User-Agent": f"mhi2-video-finder/{__version__}"})
     try:
         with urlopen(req, timeout=timeout) as resp:
             data = resp.read()

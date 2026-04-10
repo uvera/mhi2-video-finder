@@ -9,13 +9,13 @@ from pathlib import Path
 from collections.abc import Callable
 from typing import Any
 
-from video_finder.config import Settings, build_ffmpeg_command
-from video_finder.ffmpeg_progress import (
+from mhi2_video_finder.config import Settings, build_ffmpeg_command
+from mhi2_video_finder.ffmpeg_progress import (
     ffprobe_duration_ms_best,
     prepare_ffmpeg_subprocess_argv,
     run_ffmpeg_with_progress,
 )
-from video_finder.metadata import (
+from mhi2_video_finder.metadata import (
     attach_album_art_to_mp4,
     best_thumbnail_url,
     download_thumbnail,

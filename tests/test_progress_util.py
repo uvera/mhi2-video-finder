@@ -1,6 +1,6 @@
 """Tests for UI progress helpers."""
 
-from video_finder.ui.progress_util import format_bytes, ytdlp_progress_percent_and_labels
+from mhi2_video_finder.ui.progress_util import format_bytes, ytdlp_progress_percent_and_labels
 
 
 def test_format_bytes() -> None:

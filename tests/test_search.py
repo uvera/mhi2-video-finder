@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-from video_finder.search import _yt_dlp_search_url, format_mv_query, video_from_url
+from mhi2_video_finder.search import _yt_dlp_search_url, format_mv_query, video_from_url
 
 
 def test_yt_dlp_search_url_limited_and_unlimited() -> None:
@@ -34,7 +34,7 @@ def test_video_from_url_single_video_mock() -> None:
     mock_cm = MagicMock()
     mock_cm.__enter__.return_value = mock_ydl
     mock_cm.__exit__.return_value = None
-    with patch("video_finder.search.yt_dlp.YoutubeDL", return_value=mock_cm):
+    with patch("mhi2_video_finder.search.yt_dlp.YoutubeDL", return_value=mock_cm):
         c = video_from_url("https://youtu.be/dQw4w9WgXcQ")
     assert c.video_id == "dQw4w9WgXcQ"
     assert "Never Gonna" in c.title
@@ -55,7 +55,7 @@ def test_video_from_url_playlist_rejected_mock() -> None:
     mock_cm = MagicMock()
     mock_cm.__enter__.return_value = mock_ydl
     mock_cm.__exit__.return_value = None
-    with patch("video_finder.search.yt_dlp.YoutubeDL", return_value=mock_cm):
+    with patch("mhi2_video_finder.search.yt_dlp.YoutubeDL", return_value=mock_cm):
         try:
             video_from_url("https://www.youtube.com/playlist?list=PLx")
         except ValueError as e:

@@ -1,4 +1,4 @@
-"""Typer CLI for video-finder."""
+"""Typer CLI for mhi2-video-finder."""
 
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ from pathlib import Path
 
 import typer
 
-from video_finder import __version__
-from video_finder.config import Settings, load_settings
-from video_finder.download import download_to_cache
-from video_finder.search import VideoCandidate, list_channel_videos, list_playlist_videos
-from video_finder.transcode import transcode
-from video_finder.workflow import (
+from mhi2_video_finder import __version__
+from mhi2_video_finder.config import Settings, load_settings
+from mhi2_video_finder.download import download_to_cache
+from mhi2_video_finder.search import VideoCandidate, list_channel_videos, list_playlist_videos
+from mhi2_video_finder.transcode import transcode
+from mhi2_video_finder.workflow import (
     ensure_and_print_output_dir,
     fmt_duration,
     gather_search_rows,
@@ -102,7 +102,7 @@ def _main(
         help="Show version and exit.",
     ),
 ) -> None:
-    """video-finder: YouTube → MHI2-oriented MP4."""
+    """mhi2-video-finder: YouTube → MHI2-oriented MP4."""
     pass
 
 

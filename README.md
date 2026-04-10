@@ -1,4 +1,6 @@
-# video-finder
+# mhi2-video-finder
+
+**Repository:** [github.com/uvera/mhi2-video-finder](https://github.com/uvera/mhi2-video-finder) · clone: `git@github.com:uvera/mhi2-video-finder.git`
 
 Search YouTube for music-video-style results, download with [yt-dlp](https://github.com/yt-dlp/yt-dlp), and transcode with **ffmpeg** to **H.264 / AAC MP4** tuned for **Audi USB “music interface”** limits (and similar MMI/MHI2-style players).
 
@@ -25,12 +27,12 @@ cd pacman
 makepkg -si
 ```
 
-This installs `/usr/bin/video-finder`, `/usr/bin/video-finder-ui`, and the desktop entry system-wide.
+This installs `/usr/bin/mhi2-video-finder`, `/usr/bin/mhi2-video-finder-ui`, and the desktop entry system-wide.
 
 Use a virtual environment (recommended on Arch and other PEP 668–managed Pythons):
 
 ```bash
-cd /path/to/video-finder
+cd /path/to/mhi2-video-finder
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
@@ -41,18 +43,18 @@ pip install -e ".[dev]"
 The GUI adds a **Search** tab (search term, channel `/videos`, or playlist URL), multi-select to **queue downloads**, a **Downloads** tab with yt-dlp progress, and a **Convert** tab with ffmpeg encode progress (percent from stream duration when known).
 
 ```bash
-pip install -e ".[gui]"    # or pip install "video-finder[gui]"
-video-finder-ui
-video-finder-ui --config /path/to/config.toml
+pip install -e ".[gui]"    # or pip install "mhi2-video-finder[gui]"
+mhi2-video-finder-ui
+mhi2-video-finder-ui --config /path/to/config.toml
 ```
 
-A `.desktop` entry is installed as `video-finder` (launches `video-finder-ui`) when you install from the wheel.
+A `.desktop` entry is installed as `mhi2-video-finder` (launches `mhi2-video-finder-ui`) when you install from the wheel.
 
-Incomplete download/convert jobs are saved under **`$XDG_CACHE_HOME/video-finder/jobs.sqlite`** (default `~/.cache/video-finder/jobs.sqlite`) so they survive app restarts; finished jobs are removed from that database. Rows with a missing raw file or an existing output MP4 are cleaned up on startup.
+Incomplete download/convert jobs are saved under **`$XDG_CACHE_HOME/mhi2-video-finder/jobs.sqlite`** (default `~/.cache/mhi2-video-finder/jobs.sqlite`) so they survive app restarts; finished jobs are removed from that database. Rows with a missing raw file or an existing output MP4 are cleaned up on startup.
 
 ## Config
 
-Optional file: `$XDG_CONFIG_HOME/video-finder/config.toml` (default: `~/.config/video-finder/config.toml`).
+Optional file: `$XDG_CONFIG_HOME/mhi2-video-finder/config.toml` (default: `~/.config/mhi2-video-finder/config.toml`).
 
 Defaults already match **Audi’s published USB video limits** (see below). Override only if your car plays higher specs or for home use.
 
@@ -83,8 +85,8 @@ preset = "medium"
 # vaapi_profile = 0   # 0 = from h264_profile; or set e.g. 77 (main), 100 (high)
 # vaapi_cbr = true    # VAAPI constant bitrate (rc_mode 2); set false if you prefer encoder default RC
 scale_flags = "bicubic"
-raw_cache_dir = "~/.cache/video-finder/raw"
-output_dir = "~/Videos/video-finder"
+raw_cache_dir = "~/.cache/mhi2-video-finder/raw"
+output_dir = "~/Videos/mhi2-video-finder"
 # Embed title / artist / album (from yt-dlp) and highest-res thumbnail as MP4 album art.
 embed_metadata = true
 embed_album_art = true
@@ -92,9 +94,9 @@ embed_album_art = true
 
 To **lift limits** for a TV or PC (not the car), raise `max_width` / `max_height`, `fps`, `video_bitrate_k`, and `video_bitrate_peak_k` (or set `video_bitrate_peak_k = 0` to disable the peak cap).
 
-Environment variables override the same keys when prefixed with `VIDEO_FINDER_`.
+Environment variables override the same keys when prefixed with `MHI2_VIDEO_FINDER_`.
 
-By default, finished MP4s go under **`~/Videos/video-finder`**. Before each download/transcode, the tool **creates the output folder immediately** and prints `Output folder (ready): /absolute/path` on stderr.
+By default, finished MP4s go under **`~/Videos/mhi2-video-finder`**. Before each download/transcode, the tool **creates the output folder immediately** and prints `Output folder (ready): /absolute/path` on stderr.
 
 ## Audi USB / music interface (official limits)
 
@@ -117,20 +119,20 @@ The tool’s defaults respect the video table and use **AAC-LC** stereo at 48 kH
 ## Usage
 
 ```bash
-video-finder search "daft punk harder better"
-video-finder search --artist "Daft Punk" --title "Harder Better Faster"
-video-finder channel "@daftpunk"
-video-finder playlist "https://www.youtube.com/playlist?list=..."
-video-finder download "https://www.youtube.com/watch?v=..." -o ./out.mp4
-video-finder convert ./input.mkv -o ./out.mp4
-video-finder get "artist song"
-video-finder get "artist song" --auto-first
-video-finder get "artist song" --subdir my-album
-video-finder interactive
-video-finder interactive --subdir my-picks
-video-finder get "artist song" --no-embed   # transcode only; no tags or embedded art
+mhi2-video-finder search "daft punk harder better"
+mhi2-video-finder search --artist "Daft Punk" --title "Harder Better Faster"
+mhi2-video-finder channel "@daftpunk"
+mhi2-video-finder playlist "https://www.youtube.com/playlist?list=..."
+mhi2-video-finder download "https://www.youtube.com/watch?v=..." -o ./out.mp4
+mhi2-video-finder convert ./input.mkv -o ./out.mp4
+mhi2-video-finder get "artist song"
+mhi2-video-finder get "artist song" --auto-first
+mhi2-video-finder get "artist song" --subdir my-album
+mhi2-video-finder interactive
+mhi2-video-finder interactive --subdir my-picks
+mhi2-video-finder get "artist song" --no-embed   # transcode only; no tags or embedded art
 export YOUTUBE_API_KEY=...
-video-finder search "query" --use-youtube-api
+mhi2-video-finder search "query" --use-youtube-api
 ```
 
 ### Faster encodes
@@ -146,23 +148,23 @@ video-finder search "query" --use-youtube-api
 - **`ffmpeg_threads = 8`** (or your core count) — sometimes helps if ffmpeg/x264 under-uses CPU; **`0`** leaves the default (often fine).
 - **`ffmpeg_nice = 10`** (Unix) — lower scheduling priority so other apps stay responsive; does not cap peak CPU when the machine is idle.
 - **`ffmpeg_cpu_limit_percent = 50`** — soft cap on average CPU via **`cpulimit`** (install on Arch: `pacman -S cpulimit`); **`0`** disables. Ignored if `cpulimit` is not on `PATH`.
-- **`max_parallel_downloads`** / **`max_parallel_converts`** — cap how many downloads or encodes run at once in **`video-finder-ui`** (defaults **4** / **4**). The **Settings** tab can change these and save to `config.toml`.
+- **`max_parallel_downloads`** / **`max_parallel_converts`** — cap how many downloads or encodes run at once in **`mhi2-video-finder-ui`** (defaults **4** / **4**). The **Settings** tab can change these and save to `config.toml`.
 
 **Outside this tool**
 
 - **Two encodes at once** — run a second terminal and convert another file in parallel (watch CPU thermals).
-- **Hardware decode** — advanced: run your own `ffmpeg` with **`-hwaccel cuda`** / **`-hwaccel vaapi`** before `-i` to speed decoding when you still CPU-encode; not wired into `video-finder` today.
+- **Hardware decode** — advanced: run your own `ffmpeg` with **`-hwaccel cuda`** / **`-hwaccel vaapi`** before `-i` to speed decoding when you still CPU-encode; not wired into `mhi2-video-finder` today.
 - **Power / thermals** — laptop on AC + performance mode avoids throttling mid-encode.
 - **Shorter pipeline** — you’re already downscaling to **720×576**; there’s little left to skip without breaking Audi limits.
 
-In **`video-finder interactive`**, each finished **MP4 path is printed to stdout** as that encode completes; progress goes to stderr.
+In **`mhi2-video-finder interactive`**, each finished **MP4 path is printed to stdout** as that encode completes; progress goes to stderr.
 
 ## Arch Linux packaging (AUR)
 
 Upstream ships an AUR-style recipe under [`aur/`](aur/):
 
 - Edit [`aur/PKGBUILD`](aur/PKGBUILD): set `url=` and `source=` to your real GitHub repo (replace `YOUR_GITHUB_USER`), then run `makepkg --printsrcinfo > aur/.SRCINFO` (or use Docker as in the script below).
-- [`scripts/release-github-aur.sh`](scripts/release-github-aur.sh) — after `gh auth login`, pushes tag `v<version>`, downloads the **GitHub** tag tarball, writes `sha256sums` into `aur/PKGBUILD`, regenerates `aur/.SRCINFO`, and can create a GitHub release. The repo uses [`.gitattributes`](.gitattributes) `aur/ export-ignore` so the tag archive hash stays stable when only AUR metadata changes (same idea as [hikvision-viewer](https://github.com/uvera/hikvision-viewer)).
+- [`scripts/release-github-aur.sh`](scripts/release-github-aur.sh) — after `gh auth login`, runs `python -m build` (wheel + sdist, same as [`scripts/package-release.sh`](scripts/package-release.sh)), pushes tag `v<version>`, downloads the **GitHub** tag tarball, writes `sha256sums` into `aur/PKGBUILD`, regenerates `aur/.SRCINFO`, commits and pushes those files when they change (and moves the tag), builds a **pacman** package from [`pacman/PKGBUILD`](pacman/PKGBUILD) (must match `pyproject.toml` `version`), then creates a GitHub release attaching the wheel, sdist, and `.pkg.tar.zst`. The repo uses [`.gitattributes`](.gitattributes) `aur/ export-ignore` so the tag archive hash stays stable when only AUR metadata changes (same idea as [hikvision-viewer](https://github.com/uvera/hikvision-viewer)).
 - [`scripts/package-release.sh`](scripts/package-release.sh) — local `python -m build` (wheel + sdist) only.
 
 ## Legal

@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from video_finder.config import Settings, build_ffmpeg_command
-from video_finder.metadata import MediaTags, best_thumbnail_url, tags_from_ytdlp
+from mhi2_video_finder.config import Settings, build_ffmpeg_command
+from mhi2_video_finder.metadata import MediaTags, best_thumbnail_url, tags_from_ytdlp
 
 
 def test_tags_from_ytdlp_uses_track_and_channel() -> None:

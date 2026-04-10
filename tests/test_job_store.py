@@ -2,9 +2,9 @@
 
 from pathlib import Path
 
-from video_finder.search import VideoCandidate
-from video_finder.ui.job_store import JobStore
-from video_finder.ui.models import UiJob
+from mhi2_video_finder.search import VideoCandidate
+from mhi2_video_finder.ui.job_store import JobStore
+from mhi2_video_finder.ui.models import UiJob
 
 
 def test_job_store_roundtrip(tmp_path: Path) -> None:

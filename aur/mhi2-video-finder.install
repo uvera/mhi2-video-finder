@@ -1,0 +1,6 @@
+post_install() {
+  echo "CLI: mhi2-video-finder --help"
+  echo "GUI: mhi2-video-finder-ui (menu: mhi2-video-finder)"
+  echo "Config: \$XDG_CONFIG_HOME/mhi2-video-finder/config.toml (default ~/.config/mhi2-video-finder/config.toml)"
+  echo "Requires: ffmpeg on PATH (pacman -S ffmpeg)"
+}
