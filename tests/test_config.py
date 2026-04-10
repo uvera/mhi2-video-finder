@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from video_finder.config import (
+from mhi2_video_finder.config import (
     Settings,
     build_ffmpeg_command,
     build_ffmpeg_video_filter,
@@ -147,8 +147,8 @@ def test_build_ffmpeg_command_unknown_encoder() -> None:
 
 
 def test_load_settings_env_override_int(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.delenv("VIDEO_FINDER_FPS", raising=False)
-    monkeypatch.setenv("VIDEO_FINDER_FPS", "30")
+    monkeypatch.delenv("MHI2_VIDEO_FINDER_FPS", raising=False)
+    monkeypatch.setenv("MHI2_VIDEO_FINDER_FPS", "30")
     s = load_settings(tmp_path / "nope.toml")
     assert s.fps == "30"
 

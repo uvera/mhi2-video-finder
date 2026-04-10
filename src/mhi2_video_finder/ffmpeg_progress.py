@@ -12,7 +12,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from video_finder.exceptions import OperationCancelled
+from mhi2_video_finder.exceptions import OperationCancelled
 
 # Stream metadata (e.g. "DURATION        : 00:03:54.067000000")
 _DURATION_RE = re.compile(

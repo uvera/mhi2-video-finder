@@ -28,10 +28,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from video_finder import __version__
-from video_finder.config import Settings, default_config_path, load_settings, save_settings
-from video_finder.search import VideoCandidate
-from video_finder.workflow import ensure_output_dir, safe_stem, unique_out_path
+from mhi2_video_finder import __version__
+from mhi2_video_finder.config import Settings, default_config_path, load_settings, save_settings
+from mhi2_video_finder.search import VideoCandidate
+from mhi2_video_finder.workflow import ensure_output_dir, safe_stem, unique_out_path
 
 from .job_store import JobStore
 
@@ -48,7 +48,7 @@ from .workers import ConvertService, DownloadService, SearchWorker, new_job_id
 class MainWindow(QWidget):
     def __init__(self, *, config_path: Path | None = None) -> None:
         super().__init__()
-        self.setWindowTitle(f"video-finder {__version__}")
+        self.setWindowTitle(f"mhi2-video-finder {__version__}")
         self.resize(960, 640)
 
         self._config_path = config_path
@@ -63,7 +63,7 @@ class MainWindow(QWidget):
         if QSystemTrayIcon.isSystemTrayAvailable():
             self._tray = QSystemTrayIcon(self)
             self._tray.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
-            self._tray.setToolTip("video-finder")
+            self._tray.setToolTip("mhi2-video-finder")
             self._tray.show()
 
         self._dl = DownloadService(self._settings, parent=self)
@@ -329,7 +329,7 @@ class MainWindow(QWidget):
 
         queue_row = QHBoxLayout()
         self.subdir_edit = QLineEdit()
-        self.subdir_edit.setPlaceholderText("Output subfolder under Videos/video-finder")
+        self.subdir_edit.setPlaceholderText("Output subfolder under Videos/mhi2-video-finder")
         self.subdir_edit.setText("gui-downloads")
         queue_row.addWidget(QLabel("Subfolder:"))
         queue_row.addWidget(self.subdir_edit)
@@ -514,7 +514,7 @@ class MainWindow(QWidget):
             return
         self._results = list(rows)
         self.results_table.setRowCount(0)
-        from video_finder.workflow import fmt_duration
+        from mhi2_video_finder.workflow import fmt_duration
 
         for i, c in enumerate(self._results):
             self.results_table.insertRow(i)
@@ -544,7 +544,7 @@ class MainWindow(QWidget):
         QApplication.beep()
         if self._tray is not None:
             self._tray.showMessage(
-                "video-finder",
+                "mhi2-video-finder",
                 msg,
                 QSystemTrayIcon.MessageIcon.Information,
                 4000,
@@ -552,7 +552,7 @@ class MainWindow(QWidget):
         else:
             box = QMessageBox(
                 QMessageBox.Icon.Information,
-                "video-finder",
+                "mhi2-video-finder",
                 msg,
                 QMessageBox.StandardButton.Ok,
                 self,

@@ -11,10 +11,10 @@ from typing import Any
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from yt_dlp.utils import DownloadCancelled
 
-from video_finder.config import Settings
-from video_finder.download import download_to_cache
-from video_finder.exceptions import OperationCancelled
-from video_finder.transcode import transcode
+from mhi2_video_finder.config import Settings
+from mhi2_video_finder.download import download_to_cache
+from mhi2_video_finder.exceptions import OperationCancelled
+from mhi2_video_finder.transcode import transcode
 
 from .progress_util import ytdlp_progress_percent_and_labels
 
@@ -48,8 +48,8 @@ class SearchWorker(QThread):
 
     def run(self) -> None:
         try:
-            from video_finder.search import list_channel_videos, list_playlist_videos, video_from_url
-            from video_finder.workflow import gather_search_rows
+            from mhi2_video_finder.search import list_channel_videos, list_playlist_videos, video_from_url
+            from mhi2_video_finder.workflow import gather_search_rows
 
             if self.isInterruptionRequested():
                 return

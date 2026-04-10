@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
 Version=1.5
-Name=video-finder
+Name=mhi2-video-finder
 GenericName=YouTube to USB-ready MP4
 Comment=Search YouTube, download with yt-dlp, transcode for car USB players
-Exec=video-finder-ui
+Exec=mhi2-video-finder-ui
 Icon=multimedia-player
 Terminal=false
 Categories=AudioVideo;Video;Network;

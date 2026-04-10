@@ -1,4 +1,4 @@
-"""Load settings from optional TOML config and VIDEO_FINDER_* env vars."""
+"""Load settings from optional TOML config and MHI2_VIDEO_FINDER_* env vars."""
 
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ def _expand(p: str | Path) -> Path:
 def _config_path() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME")
     if base:
-        return _expand(Path(base) / "video-finder" / "config.toml")
-    return _expand("~/.config/video-finder/config.toml")
+        return _expand(Path(base) / "mhi2-video-finder" / "config.toml")
+    return _expand("~/.config/mhi2-video-finder/config.toml")
 
 
 def default_config_path() -> Path:
@@ -27,7 +27,7 @@ def default_config_path() -> Path:
 
 
 def _env_key(name: str) -> str:
-    return f"VIDEO_FINDER_{name.upper()}"
+    return f"MHI2_VIDEO_FINDER_{name.upper()}"
 
 
 def _fps_to_str(val: Any) -> str:
@@ -107,8 +107,8 @@ class Settings:
     scale_flags: str = "bicubic"
     # Resample audio before AAC; 48000 is typical for video. Try 44100 if the car still refuses to play.
     audio_sample_rate: int = 48000
-    raw_cache_dir: Path = field(default_factory=lambda: _expand("~/.cache/video-finder/raw"))
-    output_dir: Path = field(default_factory=lambda: _expand("~/Videos/video-finder"))
+    raw_cache_dir: Path = field(default_factory=lambda: _expand("~/.cache/mhi2-video-finder/raw"))
+    output_dir: Path = field(default_factory=lambda: _expand("~/Videos/mhi2-video-finder"))
     search_limit: int = 15
     match_filter: str | None = None
     youtube_api_key: str | None = None
@@ -182,7 +182,7 @@ def _format_toml_scalar(val: Any) -> str:
 
 
 def _write_merged_config(path: Path, data: dict[str, Any]) -> None:
-    lines = ["# video-finder config", ""]
+    lines = ["# mhi2-video-finder config", ""]
     for key in sorted(data.keys()):
         val = data[key]
         if val is None:

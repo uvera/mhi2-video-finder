@@ -178,7 +178,7 @@ if [[ "${SKIP_GH_RELEASE:-0}" != "1" ]]; then
 	if gh release view "${TAG}" >/dev/null 2>&1; then
 		echo "Release ${TAG} already exists."
 	else
-		gh release create "${TAG}" --title "video-finder ${VERSION}" --generate-notes
+		gh release create "${TAG}" --title "mhi2-video-finder ${VERSION}" --generate-notes
 		echo "Published GitHub release ${TAG}."
 	fi
 fi
@@ -186,5 +186,5 @@ fi
 echo ""
 echo "Done."
 if [[ "${SKIP_AUR_REFRESH:-0}" != "1" ]]; then
-	echo "AUR: copy aur/PKGBUILD and aur/.SRCINFO into ssh://aur@aur.archlinux.org/video-finder.git (or your package name), then push."
+	echo "AUR: copy aur/PKGBUILD and aur/.SRCINFO into ssh://aur@aur.archlinux.org/mhi2-video-finder.git (or your package name), then push."
 fi

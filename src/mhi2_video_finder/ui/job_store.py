@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from video_finder.search import VideoCandidate
+from mhi2_video_finder.search import VideoCandidate
 
 from .models import UiJob
 
@@ -17,9 +17,9 @@ from .models import UiJob
 def default_job_db_path() -> Path:
     base = os.environ.get("XDG_CACHE_HOME")
     if base:
-        p = Path(base).expanduser().resolve() / "video-finder"
+        p = Path(base).expanduser().resolve() / "mhi2-video-finder"
     else:
-        p = Path.home() / ".cache" / "video-finder"
+        p = Path.home() / ".cache" / "mhi2-video-finder"
     p.mkdir(parents=True, exist_ok=True)
     return p / "jobs.sqlite"
 

@@ -3,7 +3,7 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "video-finder"
+name = "mhi2-video-finder"
 version = "0.1.0"
 description = "Search YouTube for music videos, download with yt-dlp, transcode for MMI/MHI2 USB playback"
 readme = "README.md"
@@ -23,14 +23,14 @@ gui = [
 ]
 
 [project.scripts]
-video-finder = "video_finder.cli:app"
-video-finder-ui = "video_finder.ui.main:main"
+mhi2-video-finder = "mhi2_video_finder.cli:app"
+mhi2-video-finder-ui = "mhi2_video_finder.ui.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.data-files]
-"share/applications" = ["video-finder.desktop"]
+"share/applications" = ["mhi2-video-finder.desktop"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

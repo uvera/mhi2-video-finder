@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from video_finder.search import VideoCandidate
+from mhi2_video_finder.search import VideoCandidate
 
 
 @dataclass
