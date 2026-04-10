@@ -1,5 +1,7 @@
 # Maintainer: Your Name <you@example.com>
 #
+# Local checkout: use ../pacman/PKGBUILD (makepkg -si) instead of this tarball recipe.
+#
 # Set url= and source= to your GitHub repo. Run scripts/release-github-aur.sh from upstream
 # to refresh sha256sums and .SRCINFO from the tag tarball. The tag archive excludes aur/
 # (.gitattributes export-ignore). Copy PKGBUILD + .SRCINFO into your AUR clone and push.

@@ -5,3 +5,9 @@ __pycache__/
 .pytest_cache/
 dist/
 build/
+
+# makepkg local install (pacman/PKGBUILD)
+pacman/pkg/
+pacman/src/
+pacman/*.pkg.tar.zst
+pacman/*.pkg.tar.zst.sig

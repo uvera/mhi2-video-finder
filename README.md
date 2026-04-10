@@ -16,6 +16,17 @@ sudo pacman -S ffmpeg
 
 ## Install
 
+### Arch Linux (pacman, from this checkout)
+
+From the `pacman/` directory so build artifacts stay out of the Python `src/` tree:
+
+```bash
+cd pacman
+makepkg -si
+```
+
+This installs `/usr/bin/video-finder`, `/usr/bin/video-finder-ui`, and the desktop entry system-wide.
+
 Use a virtual environment (recommended on Arch and other PEP 668–managed Pythons):
 
 ```bash

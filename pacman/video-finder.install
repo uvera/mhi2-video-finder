@@ -1,0 +1,6 @@
+post_install() {
+	echo "CLI: video-finder --help"
+	echo "GUI: video-finder-ui (menu: video-finder)"
+	echo "Config: \$XDG_CONFIG_HOME/video-finder/config.toml (default ~/.config/video-finder/config.toml)"
+	echo "Requires: ffmpeg on PATH (pacman -S ffmpeg)"
+}
