@@ -164,7 +164,7 @@ In **`mhi2-video-finder interactive`**, each finished **MP4 path is printed to s
 Upstream ships an AUR-style recipe under [`aur/`](aur/):
 
 - Edit [`aur/PKGBUILD`](aur/PKGBUILD): set `url=` and `source=` to your real GitHub repo (replace `YOUR_GITHUB_USER`), then run `makepkg --printsrcinfo > aur/.SRCINFO` (or use Docker as in the script below).
-- [`scripts/release-github-aur.sh`](scripts/release-github-aur.sh) — after `gh auth login`, pushes tag `v<version>`, downloads the **GitHub** tag tarball, writes `sha256sums` into `aur/PKGBUILD`, regenerates `aur/.SRCINFO`, and can create a GitHub release. The repo uses [`.gitattributes`](.gitattributes) `aur/ export-ignore` so the tag archive hash stays stable when only AUR metadata changes (same idea as [hikvision-viewer](https://github.com/uvera/hikvision-viewer)).
+- [`scripts/release-github-aur.sh`](scripts/release-github-aur.sh) — after `gh auth login`, runs `python -m build` (wheel + sdist, same as [`scripts/package-release.sh`](scripts/package-release.sh)), pushes tag `v<version>`, downloads the **GitHub** tag tarball, writes `sha256sums` into `aur/PKGBUILD`, regenerates `aur/.SRCINFO`, commits and pushes those files when they change (and moves the tag), then creates a GitHub release. The repo uses [`.gitattributes`](.gitattributes) `aur/ export-ignore` so the tag archive hash stays stable when only AUR metadata changes (same idea as [hikvision-viewer](https://github.com/uvera/hikvision-viewer)).
 - [`scripts/package-release.sh`](scripts/package-release.sh) — local `python -m build` (wheel + sdist) only.
 
 ## Legal

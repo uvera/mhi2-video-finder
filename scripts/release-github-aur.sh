@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Push git tag v<version>, fetch GitHub source tarball SHA-256, refresh aur/PKGBUILD + aur/.SRCINFO.
-# Requires: git, gh (authenticated), curl, sha256sum. Regenerates .SRCINFO with makepkg or Docker.
+# Build wheel+sdist, push git tag v<version>, fetch GitHub source tarball SHA-256, refresh
+# aur/PKGBUILD + aur/.SRCINFO, commit/push AUR metadata when it changes, create GitHub release.
+# Requires: git, gh (authenticated), curl, sha256sum, Python build deps (see scripts/package-release.sh).
+# Regenerates .SRCINFO with makepkg or Docker.
 #
 # The tag may be force-moved to the AUR checksum commit; keep aur/ in .gitattributes export-ignore
 # so the GitHub archive content/hash does not change when only aur/ metadata is updated.
 #
 # Environment (optional):
+#   SKIP_BUILD=1          — skip python -m build (wheel + sdist)
 #   SKIP_TAG_PUSH=1       — do not create/push tag
 #   SKIP_AUR_REFRESH=1    — only tag push / release
 #   SKIP_GH_RELEASE=1     — do not create GitHub release
@@ -136,6 +139,11 @@ if [[ "${SKIP_AUR_REFRESH:-0}" != "1" ]]; then
 	if git archive --format=tar HEAD 2>/dev/null | tar tf - | grep -qE '^aur/'; then
 		die "aur/ is included in git archive — add 'aur/ export-ignore' to .gitattributes"
 	fi
+fi
+
+if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+	echo "Building wheel and sdist…"
+	bash "$ROOT/scripts/package-release.sh"
 fi
 
 if [[ "${SKIP_TAG_PUSH:-0}" != "1" ]]; then
