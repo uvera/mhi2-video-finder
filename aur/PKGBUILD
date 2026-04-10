@@ -8,7 +8,7 @@
 
 pkgname=mhi2-video-finder
 pkgver=0.1.0
-pkgrel=2
+pkgrel=3
 pkgdesc="YouTube music-video search, download (yt-dlp), and MHI2-oriented MP4 transcode"
 arch=('any')
 url='https://github.com/uvera/mhi2-video-finder'
@@ -17,7 +17,7 @@ depends=('python' 'ffmpeg' 'python-pyqt6' 'python-typer' 'yt-dlp')
 makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel')
 install=mhi2-video-finder.install
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/uvera/mhi2-video-finder/archive/refs/tags/v0.1.0.tar.gz")
-sha256sums=('221679dceb233d1253bf807c69f385bcc880112c2da1075c0c772ffdce1f0795')
+sha256sums=('71936d610bcd881990bda16c12c5fffeb8f1148c7450eeec0098918d71834c00')
 
 build() {
   cd "${pkgname}-${pkgver}"
