@@ -13,7 +13,7 @@ podman compose up -d --build
 ```
 
 - **`config.toml`** must exist before `up` (compose mounts it read-only). It sets `raw_cache_dir` and `output_dir` to the in-container paths used by the named volumes in [compose.yaml](compose.yaml).
-- **`.env`** holds `DAEMON_BEARER_TOKEN` (gitignored); use the same token in the GUI remote settings.
+- **`.env`** holds `DAEMON_BEARER_TOKEN` (gitignored) and is loaded via `env_file` (no compose interpolation); use the same token in the GUI remote settings.
 - **`MHI2_VF_PORT`** in `.env` changes the published host port (default `8765`).
 
 ```bash

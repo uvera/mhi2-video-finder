@@ -1,11 +1,11 @@
 # Podman Compose (also works with: docker compose)
 # Run from this directory:
 #   cp -n config.toml.example config.toml   # edit paths/token as needed
-#   cp -n .env.example .env                   # recommended: set DAEMON_BEARER_TOKEN
+#   cp -n .env.example .env                   # set DAEMON_BEARER_TOKEN here
 #   podman compose up -d --build
 #
-# Variables in .env (same directory) are substituted automatically; without .env the
-# daemon runs with no bearer token (LAN-only / dev only).
+# .env is passed directly to the container via env_file.
+# This avoids Podman Compose interpolation quirks with token values.
 #
 # Logs: podman compose logs -f
 # Stop: podman compose down
@@ -19,10 +19,11 @@ services:
     container_name: mhi2-vf
     ports:
       - "${MHI2_VF_PORT:-8765}:8765"
+    env_file:
+      - .env
     environment:
       DAEMON_HOST: "0.0.0.0"
       DAEMON_PORT: "8765"
-      DAEMON_BEARER_TOKEN: ${DAEMON_BEARER_TOKEN:-}
       DAEMON_STATE_DIR: /var/lib/mhi2-video-finder/state
       MHI2_VIDEO_FINDER_CONFIG: /config/config.toml
     volumes:
