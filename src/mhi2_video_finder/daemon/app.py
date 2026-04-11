@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -161,35 +161,42 @@ def download_job(job_id: str):
 
 
 @app.websocket("/v1/ws")
-async def websocket_endpoint(ws: WebSocket, token: str | None = Query(default=None)):
+async def websocket_endpoint(websocket: WebSocket) -> None:
+    # Read token from the URL; FastAPI's Query() injection is unreliable on some WebSocket
+    # stacks, which left token=None and caused 403 even when ?token= was present.
+    token = websocket.query_params.get("token")
+    if token is not None:
+        token = token.strip()
     if not ws_token_ok(token):
-        await ws.close(code=4401)
+        await websocket.close(code=4401)
         return
-    await hub.connect(ws)
+    await hub.connect(websocket)
     try:
         while True:
-            raw = await ws.receive_text()
+            raw = await websocket.receive_text()
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
-                await ws.send_text(json.dumps({"type": "error", "message": "invalid json"}))
+                await websocket.send_text(json.dumps({"type": "error", "message": "invalid json"}))
                 continue
             mtype = msg.get("type")
             if mtype == "ping":
-                await ws.send_text(json.dumps({"type": "pong"}))
+                await websocket.send_text(json.dumps({"type": "pong"}))
             elif mtype == "subscribe_job":
                 jid = msg.get("job_id")
                 if not isinstance(jid, str) or not jid:
-                    await ws.send_text(json.dumps({"type": "error", "message": "missing job_id"}))
+                    await websocket.send_text(json.dumps({"type": "error", "message": "missing job_id"}))
                 else:
-                    await hub.subscribe(ws, jid)
+                    await hub.subscribe(websocket, jid)
             elif mtype == "unsubscribe_job":
                 jid = msg.get("job_id")
                 if isinstance(jid, str) and jid:
-                    await hub.unsubscribe(ws, jid)
+                    await hub.unsubscribe(websocket, jid)
             else:
-                await ws.send_text(json.dumps({"type": "error", "message": f"unknown type: {mtype!r}"}))
+                await websocket.send_text(
+                    json.dumps({"type": "error", "message": f"unknown type: {mtype!r}"})
+                )
     except WebSocketDisconnect:
         pass
     finally:
-        await hub.disconnect(ws)
+        await hub.disconnect(websocket)
