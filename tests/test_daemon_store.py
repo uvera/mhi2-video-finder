@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import sqlite3
 import time
+import uuid
 from pathlib import Path
 
-from mhi2_video_finder.daemon.models import JobPhase, JobStatus
+from mhi2_video_finder.daemon.models import DaemonJobRow, JobPhase, JobStatus
 from mhi2_video_finder.daemon.store import DaemonJobStore
 
 
@@ -93,4 +94,21 @@ def test_store_repairs_invalid_status_rows_on_open(tmp_path: Path) -> None:
     assert row.error_phase == JobPhase.DOWNLOAD
     assert "auto-repaired" in row.error
     assert row.finished_at is not None
+    store.close()
+
+
+def test_store_get_normalizes_non_string_job_id(tmp_path: Path) -> None:
+    db = tmp_path / "jobs.sqlite"
+    store = DaemonJobStore(db)
+    job_id = "11111111-1111-1111-1111-111111111111"
+    store.insert(
+        DaemonJobRow(
+            job_id=job_id,
+            url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            status=JobStatus.QUEUED,
+        )
+    )
+    row = store.get(uuid.UUID(job_id))  # type: ignore[arg-type]
+    assert row is not None
+    assert row.job_id == job_id
     store.close()
