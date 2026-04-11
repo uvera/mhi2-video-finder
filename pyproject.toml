@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mhi2-video-finder"
-version = "0.3.2"
+version = "0.3.3"
 description = "Search YouTube for music videos, download with yt-dlp, transcode for MMI/MHI2 USB playback"
 readme = "README.md"
 requires-python = ">=3.11"
