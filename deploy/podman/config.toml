@@ -5,6 +5,7 @@
 
 raw_cache_dir = "/root/.cache/mhi2-video-finder/raw"
 output_dir = "/root/Videos/mhi2-video-finder"
+max_parallel_downloads = 1
 
 # Optional: tune encode defaults (see main README)
 # max_width = 720
