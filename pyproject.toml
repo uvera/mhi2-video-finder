@@ -34,6 +34,9 @@ daemon = [
 mhi2-video-finder = "mhi2_video_finder.cli:app"
 mhi2-video-finder-ui = "mhi2_video_finder.ui.main:main"
 mhi2-video-finder-daemon = "mhi2_video_finder.daemon.main:main"
+# Short aliases (same modules as mhi2-*; use after: pip install -e ".[gui]")
+video-finder-ui = "mhi2_video_finder.ui.main:main"
+video-finder = "mhi2_video_finder.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]

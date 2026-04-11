@@ -44,9 +44,11 @@ The GUI adds a **Search** tab (search term, channel `/videos`, or playlist URL),
 
 ```bash
 pip install -e ".[gui]"    # or pip install "mhi2-video-finder[gui]"
-mhi2-video-finder-ui
+mhi2-video-finder-ui     # or short alias: video-finder-ui
 mhi2-video-finder-ui --config /path/to/config.toml
 ```
+
+If `video-finder-ui` fails with `No module named 'video_finder'`, the script in your venv is stale or from another project. Run `pip install -e ".[gui]"` again; the `video-finder-ui` alias is wired to `mhi2_video_finder` (there is no `video_finder` package in this repo).
 
 A `.desktop` entry is installed as `mhi2-video-finder` (launches `mhi2-video-finder-ui`) when you install from the wheel.
 

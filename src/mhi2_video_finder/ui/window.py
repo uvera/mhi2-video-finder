@@ -547,6 +547,12 @@ class MainWindow(QWidget):
         if path:
             self.config_edit.setText(path)
 
+    def _browse_remote_dl_dir(self) -> None:
+        start = self.ui_remote_dl_dir.text().strip() or str(Path.home())
+        d = QFileDialog.getExistingDirectory(self, "Folder for files downloaded from remote server", start)
+        if d:
+            self.ui_remote_dl_dir.setText(d)
+
     def _limit_value(self) -> int | None:
         v = self.limit_spin.value()
         return None if v == 0 else v
