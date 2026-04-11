@@ -1,7 +1,7 @@
 pkgbase = mhi2-video-finder
 	pkgdesc = YouTube music-video search, download (yt-dlp), and MHI2-oriented MP4 transcode
 	pkgver = 0.3.3
-	pkgrel = 2
+	pkgrel = 3
 	url = https://github.com/uvera/mhi2-video-finder
 	install = mhi2-video-finder.install
 	arch = any
@@ -16,6 +16,6 @@ pkgbase = mhi2-video-finder
 	depends = python-typer
 	depends = yt-dlp
 	source = mhi2-video-finder-0.3.3.tar.gz::https://github.com/uvera/mhi2-video-finder/archive/refs/tags/v0.3.3.tar.gz
-	sha256sums = ef07764d91cab542c1b0ccf117a35d307c6ca7b617dd5b32e10e555178142602
+	sha256sums = c5598c35892b677d5e6c45029324ad069247a318209aa7fdaee05a88c14e7e4b
 
 pkgname = mhi2-video-finder
