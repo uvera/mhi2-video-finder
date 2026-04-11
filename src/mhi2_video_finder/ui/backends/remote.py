@@ -461,7 +461,8 @@ class RemoteJobController(QObject):
 
         if mtype == "job_state_changed":
             st = o.get("status")
-            if st == "converting":
+            ph = o.get("phase")
+            if st == "converting" or (st == "downloading" and ph == "convert"):
                 self._emit_dl_done_bridge(lid)
         elif mtype == "job_progress":
             phase = o.get("phase")

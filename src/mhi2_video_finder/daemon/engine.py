@@ -257,8 +257,18 @@ class JobEngine:
             raw_path=str(raw_path),
             ytdlp_info_json=jjson,
             download_percent=100.0,
+            phase=JobPhase.CONVERT,
             speed="",
             eta="",
+        )
+        self.emit(
+            job_id,
+            {
+                "type": "job_state_changed",
+                "job_id": job_id,
+                "status": JobStatus.DOWNLOADING.value,
+                "phase": JobPhase.CONVERT.value,
+            },
         )
         # Refresh video_id / title / channel if client omitted them
         self._store.update_meta(job_id, video_id=vid, title=title, channel=ch)
