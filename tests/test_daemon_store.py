@@ -1,0 +1,96 @@
+"""Daemon SQLite store robustness tests."""
+
+from __future__ import annotations
+
+import sqlite3
+import time
+from pathlib import Path
+
+from mhi2_video_finder.daemon.models import JobPhase, JobStatus
+from mhi2_video_finder.daemon.store import DaemonJobStore
+
+
+def _create_jobs_table(db: Path) -> None:
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS daemon_jobs (
+            job_id TEXT PRIMARY KEY,
+            url TEXT NOT NULL,
+            subdir TEXT NOT NULL DEFAULT '',
+            output_stem TEXT NOT NULL DEFAULT '',
+            video_id TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL DEFAULT '',
+            channel TEXT NOT NULL DEFAULT '',
+            no_embed INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL,
+            phase TEXT,
+            download_percent REAL NOT NULL DEFAULT -1,
+            convert_percent REAL NOT NULL DEFAULT -1,
+            speed TEXT NOT NULL DEFAULT '',
+            eta TEXT NOT NULL DEFAULT '',
+            error TEXT NOT NULL DEFAULT '',
+            error_phase TEXT,
+            raw_path TEXT,
+            output_path TEXT,
+            ytdlp_info_json TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            finished_at REAL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_store_repairs_invalid_status_rows_on_open(tmp_path: Path) -> None:
+    db = tmp_path / "jobs.sqlite"
+    _create_jobs_table(db)
+    now = time.time()
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        """
+        INSERT INTO daemon_jobs (
+            job_id, url, subdir, output_stem, video_id, title, channel, no_embed,
+            status, phase, download_percent, convert_percent, speed, eta,
+            error, error_phase, raw_path, output_path, ytdlp_info_json,
+            created_at, updated_at, finished_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "bad-row",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "",
+            "",
+            "",
+            "",
+            "",
+            0,
+            "",
+            None,
+            -1.0,
+            -1.0,
+            "",
+            "",
+            "",
+            None,
+            None,
+            None,
+            None,
+            now,
+            now,
+            None,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    store = DaemonJobStore(db)
+    row = store.get("bad-row")
+    assert row is not None
+    assert row.status == JobStatus.FAILED
+    assert row.error_phase == JobPhase.DOWNLOAD
+    assert "auto-repaired" in row.error
+    assert row.finished_at is not None
+    store.close()

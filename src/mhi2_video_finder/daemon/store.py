@@ -51,6 +51,34 @@ class DaemonJobStore:
             )
             """
         )
+        valid_statuses = tuple(s.value for s in JobStatus)
+        placeholders = ", ".join("?" for _ in valid_statuses)
+        self._conn.execute(
+            f"""
+            UPDATE daemon_jobs
+            SET
+                status = ?,
+                error = CASE
+                    WHEN COALESCE(error, '') = '' THEN ?
+                    ELSE error
+                END,
+                error_phase = CASE
+                    WHEN COALESCE(error_phase, '') = '' THEN ?
+                    ELSE error_phase
+                END,
+                finished_at = COALESCE(finished_at, ?),
+                updated_at = ?
+            WHERE COALESCE(TRIM(status), '') = '' OR status NOT IN ({placeholders})
+            """,
+            (
+                JobStatus.FAILED.value,
+                "invalid persisted job status; row was auto-repaired",
+                JobPhase.DOWNLOAD.value,
+                time.time(),
+                time.time(),
+                *valid_statuses,
+            ),
+        )
         self._conn.commit()
 
     def insert(self, row: DaemonJobRow) -> None:
@@ -237,9 +265,22 @@ class DaemonJobStore:
 
     def _row_from_sql(self, row: sqlite3.Row) -> DaemonJobRow:
         d = dict(row)
-        st = JobStatus(d["status"])
-        ph = JobPhase(d["phase"]) if d["phase"] else None
-        eph = JobPhase(d["error_phase"]) if d["error_phase"] else None
+        try:
+            st = JobStatus(str(d.get("status") or "").strip())
+        except ValueError:
+            st = JobStatus.FAILED
+            if not (d.get("error") or "").strip():
+                d["error"] = "invalid persisted job status"
+            if not (d.get("error_phase") or "").strip():
+                d["error_phase"] = JobPhase.DOWNLOAD.value
+        try:
+            ph = JobPhase(str(d.get("phase") or "").strip()) if d.get("phase") else None
+        except ValueError:
+            ph = None
+        try:
+            eph = JobPhase(str(d.get("error_phase") or "").strip()) if d.get("error_phase") else None
+        except ValueError:
+            eph = None
         yjson = d["ytdlp_info_json"]
         return DaemonJobRow(
             job_id=d["job_id"],

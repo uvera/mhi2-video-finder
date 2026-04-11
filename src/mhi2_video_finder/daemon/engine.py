@@ -25,6 +25,13 @@ from mhi2_video_finder.daemon.urlvalidate import validate_youtube_url
 from mhi2_video_finder.ytdlp_progress_map import ytdlp_progress_percent_and_labels
 
 
+_DOWNLOAD_STUCK_SECONDS = 10.0
+
+
+class _DownloadStalled(RuntimeError):
+    pass
+
+
 class JobEngine:
     def __init__(
         self,
@@ -172,40 +179,71 @@ class JobEngine:
         )
 
         cache = self._settings.merged_raw_cache_dir()
+        retried_after_stall = False
+        raw_path: Path | None = None
+        yinfo: dict[str, Any] | None = None
+        for attempt in (1, 2):
+            last_pct: float | None = None
+            last_pct_change_at = time.monotonic()
 
-        def hook(d: dict[str, Any]) -> None:
-            pct, speed, eta = ytdlp_progress_percent_and_labels(d)
-            self._store.update(
-                job_id,
-                download_percent=pct,
-                speed=speed or "",
-                eta=eta or "",
-            )
-            self.emit(
-                job_id,
-                {
-                    "type": "job_progress",
-                    "job_id": job_id,
-                    "phase": JobPhase.DOWNLOAD.value,
-                    "percent": pct,
-                    "speed": speed,
-                    "eta": eta,
-                    "indeterminate": pct < 0,
-                },
-            )
+            def hook(d: dict[str, Any]) -> None:
+                nonlocal last_pct, last_pct_change_at
+                pct, speed, eta = ytdlp_progress_percent_and_labels(d)
+                now = time.monotonic()
+                if 0.0 <= pct < 100.0:
+                    if last_pct is None or pct != last_pct:
+                        last_pct = pct
+                        last_pct_change_at = now
+                    elif now - last_pct_change_at > _DOWNLOAD_STUCK_SECONDS:
+                        raise _DownloadStalled(
+                            f"download progress stuck at {pct:.2f}% for over "
+                            f"{_DOWNLOAD_STUCK_SECONDS:.0f} seconds"
+                        )
+                self._store.update(
+                    job_id,
+                    download_percent=pct,
+                    speed=speed or "",
+                    eta=eta or "",
+                )
+                self.emit(
+                    job_id,
+                    {
+                        "type": "job_progress",
+                        "job_id": job_id,
+                        "phase": JobPhase.DOWNLOAD.value,
+                        "percent": pct,
+                        "speed": speed,
+                        "eta": eta,
+                        "indeterminate": pct < 0,
+                    },
+                )
 
-        try:
-            raw_path, yinfo = download_to_cache(
-                row.url,
-                cache,
-                progress_hooks=[hook],
-                should_cancel=cancelled,
-            )
-        except DownloadCancelled:
+            try:
+                raw_path, yinfo = download_to_cache(
+                    row.url,
+                    cache,
+                    progress_hooks=[hook],
+                    should_cancel=cancelled,
+                )
+                break
+            except DownloadCancelled:
+                self._finish_cancelled(job_id)
+                return
+            except _DownloadStalled:
+                if attempt == 1:
+                    retried_after_stall = True
+                    self._store.update(job_id, download_percent=-1.0, speed="", eta="")
+                    continue
+                self._finish_cancelled(job_id)
+                return
+            except Exception as e:
+                if retried_after_stall:
+                    self._finish_cancelled(job_id)
+                else:
+                    self._finish_failed(job_id, JobPhase.DOWNLOAD, str(e))
+                return
+        if raw_path is None:
             self._finish_cancelled(job_id)
-            return
-        except Exception as e:
-            self._finish_failed(job_id, JobPhase.DOWNLOAD, str(e))
             return
 
         jjson = ytdlp_info_to_json(yinfo)
