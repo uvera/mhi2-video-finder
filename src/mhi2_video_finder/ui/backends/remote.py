@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from pathlib import Path
@@ -14,6 +15,8 @@ import websocket
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from mhi2_video_finder.config import Settings
+
+_log = logging.getLogger(__name__)
 
 
 def _http_base_to_ws_base(base: str) -> str:
@@ -93,6 +96,8 @@ class RemoteJobController(QObject):
 
     connection_error = pyqtSignal(str)
     remote_registered = pyqtSignal(str, str)  # local_job_id, remote_job_id (after POST)
+    # Short status text for the main window (emitted from worker threads; Qt queues to GUI thread).
+    user_status = pyqtSignal(str)
 
     def __init__(self, get_settings: Callable[[], Settings]) -> None:
         super().__init__()
@@ -204,6 +209,16 @@ class RemoteJobController(QObject):
         return f"{base}/v1/ws{q}"
 
     def _post_job(self, local_id: str, url: str, p: dict[str, Any]) -> None:
+        base = self._base()
+        if not base:
+            self.dl.item_failed.emit(
+                local_id,
+                "Remote base URL is empty; set it in Settings and Apply or Save.",
+            )
+            return
+        post_url = f"{base}/v1/jobs"
+        self.user_status.emit(f"Remote: POST {post_url} …")
+        _log.info("POST %s local_job_id=%s body_url=%s", post_url, local_id, url)
         try:
             body = {
                 "url": url,
@@ -214,19 +229,67 @@ class RemoteJobController(QObject):
                 "channel": p.get("channel") or "",
                 "no_embed": bool(p.get("no_embed")),
             }
-            with httpx.Client(timeout=120.0) as c:
-                r = c.post(f"{self._base()}/v1/jobs", json=body, headers=self._headers())
-            r.raise_for_status()
-            data = r.json()
+            timeout = httpx.Timeout(120.0, connect=15.0)
+            with httpx.Client(timeout=timeout) as c:
+                r = c.post(post_url, json=body, headers=self._headers())
+            _log.info("POST response %s %s", r.status_code, r.headers.get("content-type", ""))
+            try:
+                r.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                detail = (e.response.text or "")[:800].strip()
+                msg = f"HTTP {e.response.status_code} from {post_url}"
+                if detail:
+                    msg += f": {detail}"
+                _log.warning("POST failed: %s", msg)
+                self.dl.item_failed.emit(local_id, msg)
+                self.user_status.emit(f"Remote: failed ({e.response.status_code})")
+                return
+            try:
+                data = r.json()
+            except json.JSONDecodeError:
+                snippet = (r.text or "")[:300]
+                msg = f"Server did not return JSON (status {r.status_code}): {snippet!r}"
+                _log.warning(msg)
+                self.dl.item_failed.emit(local_id, msg)
+                self.user_status.emit("Remote: invalid response (not JSON)")
+                return
+            if "job_id" not in data:
+                self.dl.item_failed.emit(local_id, f"Unexpected JSON from server: {data!r}")
+                self.user_status.emit("Remote: bad response (no job_id)")
+                return
             rid = str(data["job_id"])
             with self._lock:
                 self._l2r[local_id] = rid
                 self._r2l[rid] = local_id
+            _log.info("remote job id %s for local %s", rid, local_id)
             self.remote_registered.emit(local_id, rid)
             self._subscribe_remote(rid)
             self.start_ws()
+            self.user_status.emit(f"Remote: job accepted ({rid[:8]}…)")
+        except httpx.ConnectError as e:
+            msg = f"Cannot connect to {base}: {e}"
+            _log.warning(msg)
+            self.dl.item_failed.emit(local_id, msg)
+            self.user_status.emit("Remote: connection refused / unreachable")
+        except httpx.ConnectTimeout as e:
+            msg = f"Connect timed out to {base}: {e}"
+            _log.warning(msg)
+            self.dl.item_failed.emit(local_id, msg)
+            self.user_status.emit("Remote: connect timeout")
+        except httpx.ReadTimeout as e:
+            msg = f"Server accepted the connection but did not respond in time: {base} — {e}"
+            _log.warning(msg)
+            self.dl.item_failed.emit(local_id, msg)
+            self.user_status.emit("Remote: read timeout")
+        except httpx.TimeoutException as e:
+            msg = f"Timeout talking to {base}: {e}"
+            _log.warning(msg)
+            self.dl.item_failed.emit(local_id, msg)
+            self.user_status.emit("Remote: timeout")
         except Exception as e:
+            _log.exception("POST /v1/jobs")
             self.dl.item_failed.emit(local_id, str(e))
+            self.user_status.emit("Remote: error (see Downloads row or terminal)")
 
     def _post_cancel(self, local_id: str, remote_id: str) -> None:
         try:

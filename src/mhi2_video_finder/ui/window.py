@@ -113,6 +113,8 @@ class MainWindow(QWidget):
         self._status = QLabel("")
         self._status.setStyleSheet("color: palette(mid);")
         root.addWidget(self._status)
+        if self._remote is not None:
+            self._remote.user_status.connect(self._status.setText)
 
         self._apply_settings_to_widgets()
 
