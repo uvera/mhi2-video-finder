@@ -307,8 +307,35 @@ class RemoteJobController(QObject):
                 )
                 return
             r.raise_for_status()
+            # Some servers/links can drop the WS cancel event; reconcile over REST so
+            # the UI row still reflects cancellation after a successful cancel request.
+            self._reconcile_after_cancel(local_id, remote_id)
         except Exception as e:
             self.connection_error.emit(f"Cancel failed: {e}")
+
+    def _reconcile_after_cancel(self, local_id: str, remote_id: str) -> None:
+        last_err: Exception | None = None
+        for _ in range(8):
+            try:
+                with httpx.Client(timeout=10.0) as c:
+                    r = c.get(f"{self._base()}/v1/jobs/{remote_id}", headers=self._headers())
+                if r.status_code == 404:
+                    self._emit_remote_missing(
+                        local_id,
+                        remote_id,
+                        "Status sync after cancel failed because the server no longer has this job id.",
+                    )
+                    return
+                r.raise_for_status()
+                row = r.json()
+                self._apply_status_snapshot(local_id, row)
+                if row.get("status") in ("cancelled", "failed", "done"):
+                    return
+            except Exception as e:
+                last_err = e
+            time.sleep(0.35)
+        if last_err is not None:
+            self.connection_error.emit(f"Cancel sync failed: {last_err}")
 
     def _get_status_and_reconcile(self, local_id: str, remote_id: str) -> None:
         try:
@@ -385,11 +412,11 @@ class RemoteJobController(QObject):
     def _ws_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                subs: list[str] = []
-                with self._lock:
-                    subs = list(self._r2l.keys())
-
                 def on_open(ws: Any) -> None:
+                    # Read current subscriptions at open-time (not loop-time): jobs can be
+                    # re-registered while the socket is still connecting during client restart.
+                    with self._lock:
+                        subs = list(self._r2l.keys())
                     for rid in subs:
                         try:
                             ws.send(json.dumps({"type": "subscribe_job", "job_id": rid}))
