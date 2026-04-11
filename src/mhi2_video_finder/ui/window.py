@@ -886,13 +886,12 @@ class MainWindow(QWidget):
         cancel_btn = QPushButton("Cancel")
         cancel_btn.setEnabled(job.convert_status in ("queued", "waiting", "converting"))
         cancel_btn.clicked.connect(lambda *, jid=job.job_id: self._cancel_convert_for_job(jid))
-        restart_btn = QPushButton("Restart")
-        raw_ok = job.raw_path is not None and job.raw_path.is_file()
-        restart_btn.setVisible(job.backend != "remote")
+        restart_btn = QPushButton("Re-run conversion")
         restart_btn.setEnabled(
-            raw_ok and job.convert_status in ("failed", "cancelled")
+            job.download_status == "done"
+            and job.convert_status in ("failed", "cancelled", "done")
         )
-        restart_btn.clicked.connect(lambda *, jid=job.job_id: self._restart_convert_for_job(jid))
+        restart_btn.clicked.connect(lambda *, jid=job.job_id: self._rerun_convert_for_job(jid))
         save_btn = QPushButton("Save to PC")
         need_save = (
             job.backend == "remote"
@@ -952,18 +951,28 @@ class MainWindow(QWidget):
             return
         if job.download_status not in ("failed", "cancelled"):
             return
+        self._requeue_full_pipeline(job)
+
+    def _requeue_full_pipeline(self, job: UiJob) -> None:
         job.download_status = "queued"
         job.download_percent = -1.0
         job.download_speed = ""
         job.download_eta = ""
         job.download_error = ""
+        job.raw_path = None
+        job.ytdlp_info = None
+        job.convert_status = "waiting"
+        job.convert_percent = 0.0
+        job.convert_error = ""
+        job.convert_indeterminate = False
+        job.remote_saved_locally = job.backend != "remote"
         job.remote_job_id = None
         if job.backend == "remote" and self._remote:
-            self._remote.reset_local_tracking(job_id)
+            self._remote.reset_local_tracking(job.job_id)
             sub = self.subdir_edit.text().strip() or "gui-downloads"
             stem = safe_stem(job.candidate.title, job.candidate.video_id)
             self._remote.set_pending_job(
-                job_id,
+                job.job_id,
                 subdir=sub,
                 output_stem=stem,
                 video_id=job.candidate.video_id,
@@ -971,34 +980,29 @@ class MainWindow(QWidget):
                 channel=job.candidate.channel,
                 no_embed=job.no_embed,
             )
-        self._dl.enqueue(job_id, job.candidate.url)
+        self._dl.enqueue(job.job_id, job.candidate.url)
         self._persist_job(job)
         self._refresh_downloads_table()
+        self._refresh_convert_table()
 
     def _cancel_convert_for_job(self, job_id: str) -> None:
         self._cv.cancel_convert(job_id)
 
-    def _restart_convert_for_job(self, job_id: str) -> None:
+    def _rerun_convert_for_job(self, job_id: str) -> None:
         job = self._jobs.get(job_id)
         if not job or job.download_status != "done":
             return
-        if job.convert_status not in ("failed", "cancelled"):
-            return
-        if job.backend == "remote":
-            QMessageBox.information(
-                self,
-                "Restart convert",
-                "Remote transcodes run on the server. Re-queue the video or fix the job on the server.",
-            )
-            return
-        if not job.raw_path or not job.raw_path.is_file():
-            QMessageBox.warning(
-                self,
-                "Restart convert",
-                "Raw download file is missing. Restart the download first.",
-            )
+        if job.convert_status in ("queued", "waiting", "converting"):
             return
         job.no_embed = self.no_embed_cb.isChecked()
+        if job.backend == "remote":
+            self._requeue_full_pipeline(job)
+            self._status.setText(f"Re-queued remote conversion: {job.candidate.title}")
+            return
+        if not job.raw_path or not job.raw_path.is_file():
+            self._requeue_full_pipeline(job)
+            self._status.setText(f"Raw cache missing, re-downloading before conversion: {job.candidate.title}")
+            return
         job.convert_status = "queued"
         job.convert_percent = 0.0
         job.convert_error = ""
