@@ -1,0 +1,352 @@
+"""Job queue: download + transcode with cancellation and SQLite persistence."""
+
+from __future__ import annotations
+
+import asyncio
+import threading
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any
+
+from yt_dlp.utils import DownloadCancelled
+
+from mhi2_video_finder.config import Settings
+from mhi2_video_finder.download import download_to_cache
+from mhi2_video_finder.exceptions import OperationCancelled
+from mhi2_video_finder.transcode import transcode
+from mhi2_video_finder.workflow import ensure_output_dir, unique_out_path
+
+from mhi2_video_finder.daemon.hub import WsHub
+from mhi2_video_finder.daemon.models import DaemonJobRow, JobPhase, JobStatus
+from mhi2_video_finder.daemon.store import DaemonJobStore, ytdlp_info_from_json, ytdlp_info_to_json
+from mhi2_video_finder.daemon.urlvalidate import validate_youtube_url
+from mhi2_video_finder.ytdlp_progress_map import ytdlp_progress_percent_and_labels
+
+
+class JobEngine:
+    def __init__(
+        self,
+        settings: Settings,
+        store: DaemonJobStore,
+        hub: WsHub,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        self._settings = settings
+        self._store = store
+        self._hub = hub
+        self._loop = loop
+        n = max(1, min(32, int(settings.max_parallel_downloads)))
+        self._executor = ThreadPoolExecutor(max_workers=n, thread_name_prefix="vf-daemon")
+        self._lock = threading.Lock()
+        self._cancel_events: dict[str, threading.Event] = {}
+
+    def shutdown(self, *, wait: bool = True) -> None:
+        with self._lock:
+            for ev in self._cancel_events.values():
+                ev.set()
+        self._executor.shutdown(wait=wait, cancel_futures=True)
+
+    def _schedule_emit(self, job_id: str, message: dict[str, Any]) -> None:
+        try:
+            asyncio.run_coroutine_threadsafe(self._hub.broadcast_job(job_id, message), self._loop)
+        except RuntimeError:
+            pass
+
+    def emit(self, job_id: str, message: dict[str, Any]) -> None:
+        self._schedule_emit(job_id, message)
+
+    def _abort_for(self, job_id: str) -> threading.Event:
+        with self._lock:
+            ev = self._cancel_events.get(job_id)
+            if ev is None:
+                ev = threading.Event()
+                self._cancel_events[job_id] = ev
+            return ev
+
+    def cancel_job(self, job_id: str) -> bool:
+        row = self._store.get(job_id)
+        if not row:
+            return False
+        if row.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
+            return False
+        self._abort_for(job_id).set()
+        return True
+
+    def create_job(
+        self,
+        *,
+        url: str,
+        subdir: str,
+        output_stem: str,
+        video_id: str,
+        title: str,
+        channel: str,
+        no_embed: bool,
+    ) -> DaemonJobRow:
+        url = validate_youtube_url(url)
+        job_id = str(uuid.uuid4())
+        row = DaemonJobRow(
+            job_id=job_id,
+            url=url,
+            subdir=subdir.strip(),
+            output_stem=output_stem.strip(),
+            video_id=video_id.strip(),
+            title=title.strip(),
+            channel=channel.strip(),
+            no_embed=no_embed,
+            status=JobStatus.QUEUED,
+            phase=None,
+        )
+        self._store.insert(row)
+        self._executor.submit(self._run_job, job_id)
+        self.emit(
+            job_id,
+            {"type": "job_state_changed", "job_id": job_id, "status": "queued", "phase": None},
+        )
+        return row
+
+    def recover_non_terminal(self) -> None:
+        for row in self._store.list_non_terminal():
+            self._executor.submit(self._run_job, row.job_id)
+
+    def _run_job(self, job_id: str) -> None:
+        row = self._store.get(job_id)
+        if not row:
+            return
+        if row.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
+            return
+
+        ev = self._abort_for(job_id)
+
+        def cancelled() -> bool:
+            return ev.is_set()
+
+        if cancelled() and row.status == JobStatus.QUEUED:
+            self._finish_cancelled(job_id)
+            return
+
+        try:
+            raw_path: Path | None = None
+            yinfo: dict[str, Any] | None = None
+
+            raw_ok = bool(
+                row.raw_path
+                and Path(row.raw_path).is_file()
+                and Path(row.raw_path).stat().st_size > 4096
+            )
+            # Resume after restart: skip download if raw cache still present
+            if raw_ok:
+                raw_path = Path(row.raw_path)  # type: ignore[arg-type]
+                yinfo = ytdlp_info_from_json(row.ytdlp_info_json)
+            else:
+                self._store.update(
+                    job_id,
+                    status=JobStatus.DOWNLOADING,
+                    phase=JobPhase.DOWNLOAD,
+                    download_percent=-1.0,
+                    clear_error_phase=True,
+                    error="",
+                    clear_finished=True,
+                    finished_at=None,
+                )
+                self.emit(
+                    job_id,
+                    {
+                        "type": "job_state_changed",
+                        "job_id": job_id,
+                        "status": JobStatus.DOWNLOADING.value,
+                        "phase": JobPhase.DOWNLOAD.value,
+                    },
+                )
+
+                cache = self._settings.merged_raw_cache_dir()
+
+                def hook(d: dict[str, Any]) -> None:
+                    pct, speed, eta = ytdlp_progress_percent_and_labels(d)
+                    self._store.update(
+                        job_id,
+                        download_percent=pct,
+                        speed=speed or "",
+                        eta=eta or "",
+                    )
+                    self.emit(
+                        job_id,
+                        {
+                            "type": "job_progress",
+                            "job_id": job_id,
+                            "phase": JobPhase.DOWNLOAD.value,
+                            "percent": pct,
+                            "speed": speed,
+                            "eta": eta,
+                            "indeterminate": pct < 0,
+                        },
+                    )
+
+                try:
+                    raw_path, yinfo = download_to_cache(
+                        row.url,
+                        cache,
+                        progress_hooks=[hook],
+                        should_cancel=cancelled,
+                    )
+                except DownloadCancelled:
+                    self._finish_cancelled(job_id)
+                    return
+                except Exception as e:
+                    self._finish_failed(job_id, JobPhase.DOWNLOAD, str(e))
+                    return
+
+                jjson = ytdlp_info_to_json(yinfo)
+                vid = str(yinfo.get("id") or row.video_id or "") if yinfo else row.video_id
+                title = str(yinfo.get("title") or row.title or "") if yinfo else row.title
+                ch = ""
+                if yinfo:
+                    ch = str(yinfo.get("uploader") or yinfo.get("channel") or row.channel or "")
+                self._store.update(
+                    job_id,
+                    raw_path=str(raw_path),
+                    ytdlp_info_json=jjson,
+                    download_percent=100.0,
+                    speed="",
+                    eta="",
+                )
+                # Refresh video_id / title / channel if client omitted them
+                self._store.update_meta(job_id, video_id=vid, title=title, channel=ch)
+
+            # Convert
+            row = self._store.get(job_id)
+            if not row:
+                return
+            if cancelled():
+                self._finish_cancelled(job_id)
+                return
+
+            base_out = self._settings.merged_output_dir()
+            out_folder = ensure_output_dir(base_out / row.subdir) if row.subdir.strip() else base_out
+            stem = row.output_stem or "video"
+            vid_for_name = row.video_id or (yinfo or {}).get("id") or "video"
+            outp = unique_out_path(out_folder, stem, str(vid_for_name))
+
+            self._store.update(
+                job_id,
+                status=JobStatus.CONVERTING,
+                phase=JobPhase.CONVERT,
+                output_path=str(outp),
+                convert_percent=0.0,
+            )
+            self.emit(
+                job_id,
+                {
+                    "type": "job_state_changed",
+                    "job_id": job_id,
+                    "status": JobStatus.CONVERTING.value,
+                    "phase": JobPhase.CONVERT.value,
+                },
+            )
+
+            def on_prog(p: float | None) -> None:
+                pct = -1.0 if p is None else float(p)
+                self._store.update(job_id, convert_percent=pct)
+                self.emit(
+                    job_id,
+                    {
+                        "type": "job_progress",
+                        "job_id": job_id,
+                        "phase": JobPhase.CONVERT.value,
+                        "percent": pct,
+                        "speed": "",
+                        "eta": "",
+                        "indeterminate": p is None,
+                    },
+                )
+
+            try:
+                assert raw_path is not None
+                transcode(
+                    raw_path,
+                    outp,
+                    self._settings,
+                    ytdlp_info=None if row.no_embed else yinfo,
+                    on_encode_progress=on_prog,
+                    should_cancel=cancelled,
+                )
+            except OperationCancelled:
+                self._finish_cancelled(job_id)
+                return
+            except Exception as e:
+                self._finish_failed(job_id, JobPhase.CONVERT, str(e))
+                return
+
+            # Success: remove raw cache file to save space
+            try:
+                raw_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+            now = time.time()
+            self._store.update(
+                job_id,
+                status=JobStatus.DONE,
+                clear_phase=True,
+                convert_percent=100.0,
+                finished_at=now,
+                raw_path=None,
+            )
+            self.emit(
+                job_id,
+                {
+                    "type": "job_state_changed",
+                    "job_id": job_id,
+                    "status": JobStatus.DONE.value,
+                    "phase": None,
+                },
+            )
+            self.emit(
+                job_id,
+                {
+                    "type": "job_done",
+                    "job_id": job_id,
+                    "download_url": f"/v1/jobs/{job_id}/download",
+                },
+            )
+        finally:
+            with self._lock:
+                self._cancel_events.pop(job_id, None)
+
+    def _finish_failed(self, job_id: str, phase: JobPhase, err: str) -> None:
+        now = time.time()
+        self._store.update(
+            job_id,
+            status=JobStatus.FAILED,
+            phase=phase,
+            error=err[:4000],
+            error_phase=phase,
+            finished_at=now,
+        )
+        self.emit(
+            job_id,
+            {
+                "type": "job_failed",
+                "job_id": job_id,
+                "error": err,
+                "phase": phase.value,
+            },
+        )
+
+    def _finish_cancelled(self, job_id: str) -> None:
+        row = self._store.get(job_id)
+        eph = row.phase if row and row.phase else JobPhase.DOWNLOAD
+        now = time.time()
+        self._store.update(
+            job_id,
+            status=JobStatus.CANCELLED,
+            error_phase=eph,
+            clear_phase=True,
+            finished_at=now,
+        )
+        self.emit(
+            job_id,
+            {"type": "job_cancelled", "job_id": job_id, "phase": eph.value},
+        )

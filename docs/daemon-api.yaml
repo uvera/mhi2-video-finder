@@ -1,0 +1,248 @@
+openapi: 3.1.0
+info:
+  title: mhi2-video-finder daemon API
+  version: 1.0.0
+  description: |
+    REST API for submitting download+transcode jobs and fetching results.
+
+    **WebSocket** (not OpenAPI-native): `GET /v1/ws?token=<bearer>` — see `docs/daemon-websocket.md`.
+servers:
+  - url: http://localhost:8765
+    description: Default dev bind (override via daemon CLI)
+
+paths:
+  /healthz:
+    get:
+      summary: Liveness / readiness
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /v1/jobs:
+    get:
+      summary: List jobs (recent)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+      responses:
+        "200":
+          description: Job list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobListResponse"
+        "401":
+          description: Unauthorized
+    post:
+      summary: Create a download + transcode job
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateJobRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateJobResponse"
+        "400":
+          description: Invalid URL or body
+        "401":
+          description: Unauthorized
+
+  /v1/jobs/{job_id}:
+    get:
+      summary: Get job status
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Job state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobStatusResponse"
+        "404":
+          description: Unknown job_id
+        "401":
+          description: Unauthorized
+
+  /v1/jobs/{job_id}/cancel:
+    post:
+      summary: Cancel a job (cooperative)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Cancel requested
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: string
+                  status:
+                    type: string
+        "404":
+          description: Unknown job_id
+        "401":
+          description: Unauthorized
+
+  /v1/jobs/{job_id}/download:
+    get:
+      summary: Download converted MP4 (only when status is done)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: MP4 stream
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Job not finished
+        "404":
+          description: Unknown job or file missing
+        "401":
+          description: Unauthorized
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+
+  schemas:
+    CreateJobRequest:
+      type: object
+      required:
+        - url
+      properties:
+        url:
+          type: string
+          description: YouTube watch / youtu.be URL or 11-char video id
+        subdir:
+          type: string
+          description: Subfolder under server output_dir (default "")
+          default: ""
+        output_stem:
+          type: string
+          description: Base filename without .mp4 (default from title + id)
+        video_id:
+          type: string
+          description: Optional 11-char id for naming collision suffix
+        title:
+          type: string
+          description: Display title (optional; for UI persistence on client)
+        channel:
+          type: string
+          description: Channel name (optional)
+        no_embed:
+          type: boolean
+          default: false
+
+    CreateJobResponse:
+      type: object
+      properties:
+        job_id:
+          type: string
+        status:
+          type: string
+          enum: [queued, downloading, converting, done, failed, cancelled]
+        ws_url_hint:
+          type: string
+          description: Relative WebSocket path, e.g. /v1/ws?token=...
+
+    JobStatusResponse:
+      type: object
+      properties:
+        job_id:
+          type: string
+        status:
+          type: string
+        phase:
+          type: string
+          enum: [download, convert]
+          description: Active phase when in progress
+        title:
+          type: string
+        channel:
+          type: string
+        url:
+          type: string
+        video_id:
+          type: string
+        no_embed:
+          type: boolean
+        download_percent:
+          type: number
+        convert_percent:
+          type: number
+        speed:
+          type: string
+        eta:
+          type: string
+        error:
+          type: string
+        error_phase:
+          type: string
+          enum: [download, convert]
+        output_path:
+          type: string
+          description: Absolute path on server (informational)
+        created_at:
+          type: number
+        updated_at:
+          type: number
+        finished_at:
+          type: number
+          nullable: true
+
+    JobListResponse:
+      type: object
+      properties:
+        jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/JobStatusResponse"

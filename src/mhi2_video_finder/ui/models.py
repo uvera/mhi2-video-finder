@@ -15,6 +15,12 @@ class UiJob:
     candidate: VideoCandidate
     out_path: Path
     no_embed: bool = False
+    # "local" = this machine runs yt-dlp + ffmpeg; "remote" = server daemon
+    backend: str = "local"
+    # Remote: user must save MP4 from server to out_path; cleared after save
+    remote_saved_locally: bool = True
+    # Remote: daemon job id (REST/WS); local job_id stays stable for the UI row
+    remote_job_id: str | None = None
     # Download phase
     download_status: str = "queued"  # queued | downloading | done | failed
     download_percent: float = -1.0  # -1 = unknown

@@ -41,7 +41,7 @@ def _fps_to_str(val: Any) -> str:
 def _coerce_field(name: str, raw: str) -> Any:
     if name == "fps":
         return raw.strip()
-    if name in ("embed_metadata", "embed_album_art", "vaapi_cbr"):
+    if name in ("embed_metadata", "embed_album_art", "vaapi_cbr", "remote_auto_download"):
         return raw.strip().lower() in ("1", "true", "yes", "on")
     if name in (
         "max_width",
@@ -59,7 +59,7 @@ def _coerce_field(name: str, raw: str) -> Any:
         "vaapi_profile",
     ):
         return int(raw)
-    if name in ("raw_cache_dir", "output_dir"):
+    if name in ("raw_cache_dir", "output_dir", "remote_download_dir"):
         return _expand(raw)
     return raw
 
@@ -116,6 +116,14 @@ class Settings:
     embed_metadata: bool = True
     # Add highest-resolution thumbnail as MJPEG attached picture (album art).
     embed_album_art: bool = True
+    # GUI: run downloads/transcodes locally or on a remote daemon (see docs/daemon-api.yaml).
+    processing_backend: str = "local"
+    remote_base_url: str = ""
+    remote_bearer_token: str = ""
+    remote_download_dir: Path = field(
+        default_factory=lambda: _expand("~/Videos/mhi2-video-finder-remote")
+    )
+    remote_auto_download: bool = False
 
     def merged_output_dir(self) -> Path:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -124,6 +132,10 @@ class Settings:
     def merged_raw_cache_dir(self) -> Path:
         self.raw_cache_dir.mkdir(parents=True, exist_ok=True)
         return self.raw_cache_dir
+
+    def merged_remote_download_dir(self) -> Path:
+        self.remote_download_dir.mkdir(parents=True, exist_ok=True)
+        return self.remote_download_dir
 
 
 def _load_toml(path: Path) -> dict[str, Any]:
@@ -143,11 +155,13 @@ def load_settings(path: Path | None = None) -> Settings:
         if name not in data:
             continue
         val = data[name]
-        if name in ("raw_cache_dir", "output_dir") and isinstance(val, str):
+        if name in ("raw_cache_dir", "output_dir", "remote_download_dir") and isinstance(val, str):
             val = _expand(val)
         if name == "fps":
             val = _fps_to_str(val)
-        if name in ("embed_metadata", "embed_album_art", "vaapi_cbr") and isinstance(val, str):
+        if name in ("embed_metadata", "embed_album_art", "vaapi_cbr", "remote_auto_download") and isinstance(
+            val, str
+        ):
             val = val.strip().lower() in ("1", "true", "yes", "on")
         setattr(s, name, val)
 

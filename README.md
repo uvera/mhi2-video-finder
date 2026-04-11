@@ -159,6 +159,28 @@ mhi2-video-finder search "query" --use-youtube-api
 
 In **`mhi2-video-finder interactive`**, each finished **MP4 path is printed to stdout** as that encode completes; progress goes to stderr.
 
+## Headless daemon (server) + remote GUI
+
+Run download + transcode on a machine that stays on (e.g. **Podman** on a home server) so your laptop only queues jobs and pulls finished MP4s.
+
+- **Install (daemon):** `pip install "mhi2-video-finder[daemon]"` (needs **ffmpeg** on the server).
+- **Run:** `mhi2-video-finder-daemon` — listens on `DAEMON_HOST` / `DAEMON_PORT` (default `127.0.0.1:8765`). Set **`DAEMON_BEARER_TOKEN`** for LAN auth (same value in the GUI bearer field).
+- **State:** `DAEMON_STATE_DIR` (default `/var/lib/mhi2-video-finder/state`) holds the SQLite job DB; mount it on a volume for persistence.
+- **API:** OpenAPI [docs/daemon-api.yaml](docs/daemon-api.yaml) and WebSocket events [docs/daemon-websocket.md](docs/daemon-websocket.md).
+- **Container / Podman:** [deploy/podman/README.md](deploy/podman/README.md), [deploy/podman/compose.yaml](deploy/podman/compose.yaml), and [Containerfile](Containerfile).
+
+**GUI:** In **Settings → Processing backend**, choose **Remote server (Podman daemon)**, set base URL and token, and a **local folder** where finished files are saved (**Save to PC** on the Convert tab, or enable **Auto-download**). Switching local ↔ remote requires **restarting** `mhi2-video-finder-ui`.
+
+Optional `config.toml` keys (same as other settings, or `MHI2_VIDEO_FINDER_*` env):
+
+```toml
+processing_backend = "local"   # or "remote"
+remote_base_url = "http://myserver:8765"
+remote_bearer_token = "your-secret"
+remote_download_dir = "~/Videos/mhi2-video-finder-remote"
+remote_auto_download = false
+```
+
 ## Arch Linux packaging (AUR)
 
 Upstream ships an AUR-style recipe under [`aur/`](aur/):

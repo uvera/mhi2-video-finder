@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from functools import partial
 from pathlib import Path
+import threading
 
-from PyQt6.QtCore import Qt, QTimer
+import httpx
+from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -33,6 +35,7 @@ from mhi2_video_finder.config import Settings, default_config_path, load_setting
 from mhi2_video_finder.search import VideoCandidate
 from mhi2_video_finder.workflow import ensure_output_dir, safe_stem, unique_out_path
 
+from .backends.remote import RemoteJobController
 from .job_store import JobStore
 
 # Stored in QComboBox userData; must match config ``video_encoder`` values.
@@ -43,6 +46,11 @@ _ENCODER_CHOICES: tuple[tuple[str, str], ...] = (
 )
 from .models import UiJob
 from .workers import ConvertService, DownloadService, SearchWorker, new_job_id
+
+
+class _RemoteFetchBridge(QObject):
+    ok = pyqtSignal(str)
+    fail = pyqtSignal(str, str)
 
 
 class MainWindow(QWidget):
@@ -66,8 +74,23 @@ class MainWindow(QWidget):
             self._tray.setToolTip("mhi2-video-finder")
             self._tray.show()
 
-        self._dl = DownloadService(self._settings, parent=self)
-        self._cv = ConvertService(self._settings, no_embed=False, parent=self)
+        self._remote: RemoteJobController | None = None
+        self._use_remote = self._settings.processing_backend.strip().lower() == "remote"
+        self._initial_remote = self._use_remote
+        self._fetch_bridge = _RemoteFetchBridge(self)
+        self._fetch_bridge.ok.connect(self._on_remote_fetch_ok)
+        self._fetch_bridge.fail.connect(self._on_remote_fetch_fail)
+
+        if self._use_remote:
+            self._remote = RemoteJobController(lambda: self._settings)
+            self._remote.connection_error.connect(self._on_remote_connection_error)
+            self._remote.remote_registered.connect(self._on_remote_registered)
+            self._dl = self._remote.dl
+            self._cv = self._remote.cv
+            self._remote.start_ws()
+        else:
+            self._dl = DownloadService(self._settings, parent=self)
+            self._cv = ConvertService(self._settings, no_embed=False, parent=self)
         self._dl.progress.connect(self._on_dl_progress)
         self._dl.item_done.connect(self._on_dl_done)
         self._dl.item_failed.connect(self._on_dl_failed)
@@ -113,7 +136,10 @@ class MainWindow(QWidget):
     def _load_persisted_jobs(self) -> None:
         for job in self._store.load_all():
             outp = job.out_path
-            if outp.is_file() and outp.stat().st_size >= 4096:
+            if job.backend != "remote" and outp.is_file() and outp.stat().st_size >= 4096:
+                self._store.delete(job.job_id)
+                continue
+            if job.backend == "remote" and job.convert_status == "done" and job.remote_saved_locally:
                 self._store.delete(job.job_id)
                 continue
             self._jobs[job.job_id] = job
@@ -121,6 +147,19 @@ class MainWindow(QWidget):
 
         for jid in list(self._job_order):
             job = self._jobs[jid]
+            if job.backend == "remote":
+                if not job.remote_job_id and job.download_status == "queued":
+                    job.download_status = "failed"
+                    job.download_error = (
+                        "Remote job was never submitted to the server. Remove it and queue again."
+                    )
+                    self._persist_job(job)
+                    continue
+                if self._remote and job.remote_job_id:
+                    self._remote.register_existing(jid, job.remote_job_id)
+                    self._remote.sync_job_from_server(jid, job.remote_job_id)
+                continue
+
             if job.download_status == "downloading":
                 job.download_status = "queued"
                 job.download_percent = -1.0
@@ -166,6 +205,15 @@ class MainWindow(QWidget):
         return "libx264"
 
     def _apply_settings_to_widgets(self) -> None:
+        want_remote = self._settings.processing_backend.strip().lower() == "remote"
+        self.ui_processing_backend.blockSignals(True)
+        self.ui_processing_backend.setCurrentIndex(1 if want_remote else 0)
+        self.ui_processing_backend.blockSignals(False)
+        self.ui_remote_url.setText((self._settings.remote_base_url or "").strip())
+        self.ui_remote_token.setText((self._settings.remote_bearer_token or "").strip())
+        self.ui_remote_dl_dir.setText(str(self._settings.remote_download_dir))
+        self.ui_remote_auto_download.setChecked(self._settings.remote_auto_download)
+
         self.limit_spin.setValue(self._settings.search_limit if self._settings.search_limit else 15)
         self.ui_ffmpeg_threads.setValue(max(0, min(32, self._settings.ffmpeg_threads)))
         self.ui_ffmpeg_nice.setValue(max(0, min(19, self._settings.ffmpeg_nice)))
@@ -189,6 +237,15 @@ class MainWindow(QWidget):
         self._update_vaapi_options_visibility()
 
     def _sync_widgets_to_settings(self) -> None:
+        pb = self.ui_processing_backend.currentData()
+        self._settings.processing_backend = pb if pb in ("local", "remote") else "local"
+        self._settings.remote_base_url = self.ui_remote_url.text().strip()
+        self._settings.remote_bearer_token = self.ui_remote_token.text().strip()
+        rd = self.ui_remote_dl_dir.text().strip()
+        if rd:
+            self._settings.remote_download_dir = Path(rd).expanduser().resolve()
+        self._settings.remote_auto_download = self.ui_remote_auto_download.isChecked()
+
         self._settings.ffmpeg_threads = self.ui_ffmpeg_threads.value()
         self._settings.ffmpeg_nice = self.ui_ffmpeg_nice.value()
         self._settings.ffmpeg_cpu_limit_percent = self.ui_ffmpeg_cpu_limit.value()
@@ -216,6 +273,14 @@ class MainWindow(QWidget):
 
     def _apply_session_settings(self) -> None:
         self._sync_widgets_to_settings()
+        want_remote = self._settings.processing_backend.strip().lower() == "remote"
+        if want_remote != self._initial_remote:
+            QMessageBox.warning(
+                self,
+                "Restart required",
+                "Switching between local and remote processing only takes effect after you "
+                "restart mhi2-video-finder-ui.",
+            )
         self._dl.set_settings(self._settings)
         self._cv.set_settings(self._settings)
         self._dl.set_max_workers(self._settings.max_parallel_downloads)
@@ -345,6 +410,39 @@ class MainWindow(QWidget):
     def _build_settings_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
+
+        proc_box = QGroupBox("Processing backend (GUI)")
+        pg = QGridLayout(proc_box)
+        pg.addWidget(QLabel("Run jobs on:"), 0, 0)
+        self.ui_processing_backend = QComboBox()
+        self.ui_processing_backend.addItem("This computer (local)", "local")
+        self.ui_processing_backend.addItem("Remote server (Podman daemon)", "remote")
+        self.ui_processing_backend.setToolTip(
+            "Local uses yt-dlp and ffmpeg on this machine. Remote submits jobs to "
+            "mhi2-video-finder-daemon. Switching modes requires restarting the app."
+        )
+        pg.addWidget(self.ui_processing_backend, 0, 1)
+        pg.addWidget(QLabel("Remote base URL:"), 1, 0)
+        self.ui_remote_url = QLineEdit()
+        self.ui_remote_url.setPlaceholderText("http://server:8765")
+        pg.addWidget(self.ui_remote_url, 1, 1)
+        pg.addWidget(QLabel("Bearer token:"), 2, 0)
+        self.ui_remote_token = QLineEdit()
+        self.ui_remote_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self.ui_remote_token.setPlaceholderText("DAEMON_BEARER_TOKEN value (if set on server)")
+        pg.addWidget(self.ui_remote_token, 2, 1)
+        pg.addWidget(QLabel("Local folder for remote files:"), 3, 0)
+        rdir_row = QHBoxLayout()
+        self.ui_remote_dl_dir = QLineEdit()
+        self.ui_remote_dl_dir.setPlaceholderText("Where to save MP4s downloaded from the server")
+        br = QPushButton("Browse…")
+        br.clicked.connect(self._browse_remote_dl_dir)
+        rdir_row.addWidget(self.ui_remote_dl_dir)
+        rdir_row.addWidget(br)
+        pg.addLayout(rdir_row, 3, 1)
+        self.ui_remote_auto_download = QCheckBox("Auto-download finished remote jobs to the folder above")
+        pg.addWidget(self.ui_remote_auto_download, 4, 0, 1, 2)
+        lay.addWidget(proc_box)
 
         out_box = QGroupBox("Output encoding (car USB / MHI2)")
         og = QGridLayout(out_box)
@@ -563,7 +661,10 @@ class MainWindow(QWidget):
 
     def _output_folder(self) -> Path:
         sub = self.subdir_edit.text().strip() or "gui-downloads"
-        base = self._settings.merged_output_dir()
+        if self._use_remote:
+            base = self._settings.merged_remote_download_dir()
+        else:
+            base = self._settings.merged_output_dir()
         return ensure_output_dir(base / sub)
 
     def _queue_selected(self) -> None:
@@ -582,9 +683,28 @@ class MainWindow(QWidget):
             jid = new_job_id()
             stem = safe_stem(c.title, c.video_id)
             outp = unique_out_path(out_folder, stem, c.video_id)
-            job = UiJob(job_id=jid, candidate=c, out_path=outp, no_embed=ne)
+            backend = "remote" if self._use_remote else "local"
+            job = UiJob(
+                job_id=jid,
+                candidate=c,
+                out_path=outp,
+                no_embed=ne,
+                backend=backend,
+                remote_saved_locally=backend != "remote",
+            )
             self._jobs[jid] = job
             self._job_order.append(jid)
+            if self._use_remote and self._remote:
+                sub = self.subdir_edit.text().strip() or "gui-downloads"
+                self._remote.set_pending_job(
+                    jid,
+                    subdir=sub,
+                    output_stem=stem,
+                    video_id=c.video_id,
+                    title=c.title,
+                    channel=c.channel,
+                    no_embed=ne,
+                )
             self._dl.enqueue(jid, c.url)
             job.download_status = "queued"
             self._persist_job(job)
@@ -653,6 +773,12 @@ class MainWindow(QWidget):
         return detail, prog_txt, extra
 
     def _convert_status_progress(self, job: UiJob) -> tuple[str, str]:
+        if (
+            job.backend == "remote"
+            and job.convert_status == "done"
+            and not job.remote_saved_locally
+        ):
+            return "Done on server — save to PC", "100.0%"
         st = job.convert_status
         if st == "converting":
             detail = "Converting"
@@ -705,7 +831,15 @@ class MainWindow(QWidget):
         rows = [
             self._jobs[j]
             for j in self._job_order
-            if self._jobs[j].download_status == "done" and self._jobs[j].convert_status != "done"
+            if self._jobs[j].download_status == "done"
+            and (
+                self._jobs[j].convert_status != "done"
+                or (
+                    self._jobs[j].backend == "remote"
+                    and self._jobs[j].convert_status == "done"
+                    and not self._jobs[j].remote_saved_locally
+                )
+            )
         ]
         self.convert_table.setRowCount(len(rows))
         for i, job in enumerate(rows):
@@ -745,15 +879,25 @@ class MainWindow(QWidget):
         cancel_btn.clicked.connect(lambda *, jid=job.job_id: self._cancel_convert_for_job(jid))
         restart_btn = QPushButton("Restart")
         raw_ok = job.raw_path is not None and job.raw_path.is_file()
+        restart_btn.setVisible(job.backend != "remote")
         restart_btn.setEnabled(
             raw_ok and job.convert_status in ("failed", "cancelled")
         )
         restart_btn.clicked.connect(lambda *, jid=job.job_id: self._restart_convert_for_job(jid))
+        save_btn = QPushButton("Save to PC")
+        need_save = (
+            job.backend == "remote"
+            and job.convert_status == "done"
+            and not job.remote_saved_locally
+        )
+        save_btn.setVisible(need_save)
+        save_btn.clicked.connect(lambda *, jid=job.job_id: self._save_remote_to_pc(jid))
         remove_btn = QPushButton("Remove")
         remove_btn.setToolTip("Remove this entry from the queue (cancels an active transcode if needed).")
         remove_btn.clicked.connect(lambda *, jid=job.job_id: self._remove_job_from_queue(jid))
         h.addWidget(cancel_btn)
         h.addWidget(restart_btn)
+        h.addWidget(save_btn)
         h.addWidget(remove_btn)
         return w
 
@@ -804,6 +948,20 @@ class MainWindow(QWidget):
         job.download_speed = ""
         job.download_eta = ""
         job.download_error = ""
+        job.remote_job_id = None
+        if job.backend == "remote" and self._remote:
+            self._remote.reset_local_tracking(job_id)
+            sub = self.subdir_edit.text().strip() or "gui-downloads"
+            stem = safe_stem(job.candidate.title, job.candidate.video_id)
+            self._remote.set_pending_job(
+                job_id,
+                subdir=sub,
+                output_stem=stem,
+                video_id=job.candidate.video_id,
+                title=job.candidate.title,
+                channel=job.candidate.channel,
+                no_embed=job.no_embed,
+            )
         self._dl.enqueue(job_id, job.candidate.url)
         self._persist_job(job)
         self._refresh_downloads_table()
@@ -816,6 +974,13 @@ class MainWindow(QWidget):
         if not job or job.download_status != "done":
             return
         if job.convert_status not in ("failed", "cancelled"):
+            return
+        if job.backend == "remote":
+            QMessageBox.information(
+                self,
+                "Restart convert",
+                "Remote transcodes run on the server. Re-queue the video or fix the job on the server.",
+            )
             return
         if not job.raw_path or not job.raw_path.is_file():
             QMessageBox.warning(
@@ -855,6 +1020,16 @@ class MainWindow(QWidget):
             return
         job.download_status = "done"
         job.download_percent = 100.0
+        if job.backend == "remote":
+            job.raw_path = None
+            job.ytdlp_info = None
+            job.convert_status = "queued"
+            job.convert_percent = 0.0
+            job.convert_indeterminate = False
+            self._persist_job(job)
+            self._refresh_downloads_table()
+            self._refresh_convert_table()
+            return
         job.raw_path = Path(raw_path)
         job.ytdlp_info = yinfo if isinstance(yinfo, dict) else None
         job.convert_status = "queued"
@@ -910,6 +1085,16 @@ class MainWindow(QWidget):
         job.convert_status = "done"
         job.convert_percent = 100.0
         job.convert_indeterminate = False
+        if job.backend == "remote":
+            job.remote_saved_locally = False
+            self._persist_job(job)
+            self._refresh_downloads_table()
+            self._refresh_convert_table()
+            if self._settings.remote_auto_download:
+                self._start_remote_fetch(job)
+            else:
+                self._status.setText(f"Remote job done — save to PC: {job.candidate.title}")
+            return
         self._persist_job(job)
         self._refresh_downloads_table()
         self._refresh_convert_table()
@@ -933,11 +1118,72 @@ class MainWindow(QWidget):
         self._persist_job(job)
         self._refresh_convert_table()
 
+    def _on_remote_registered(self, local_id: str, remote_id: str) -> None:
+        job = self._jobs.get(local_id)
+        if job:
+            job.remote_job_id = remote_id
+            self._persist_job(job)
+
+    def _on_remote_connection_error(self, msg: str) -> None:
+        self._status.setText(f"Remote: {msg}")
+
+    def _save_remote_to_pc(self, job_id: str) -> None:
+        job = self._jobs.get(job_id)
+        if job:
+            self._start_remote_fetch(job)
+
+    def _start_remote_fetch(self, job: UiJob) -> None:
+        if not job.remote_job_id:
+            QMessageBox.warning(self, "Save", "Missing remote job id.")
+            return
+        base = (self._settings.remote_base_url or "").strip().rstrip("/")
+        if not base:
+            QMessageBox.warning(self, "Save", "Set remote base URL in Settings.")
+            return
+        rid = job.remote_job_id
+        url = f"{base}/v1/jobs/{rid}/download"
+        headers: dict[str, str] = {}
+        tok = (self._settings.remote_bearer_token or "").strip()
+        if tok:
+            headers["Authorization"] = f"Bearer {tok}"
+        out = job.out_path
+
+        def work() -> None:
+            try:
+                with httpx.Client(timeout=600.0) as c:
+                    with c.stream("GET", url, headers=headers) as r:
+                        r.raise_for_status()
+                        out.parent.mkdir(parents=True, exist_ok=True)
+                        with open(out, "wb") as f:
+                            for chunk in r.iter_bytes(chunk_size=1024 * 512):
+                                f.write(chunk)
+                self._fetch_bridge.ok.emit(job.job_id)
+            except OSError as e:
+                self._fetch_bridge.fail.emit(job.job_id, str(e))
+            except httpx.HTTPError as e:
+                self._fetch_bridge.fail.emit(job.job_id, str(e))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_remote_fetch_ok(self, job_id: str) -> None:
+        job = self._jobs.get(job_id)
+        if not job:
+            return
+        job.remote_saved_locally = True
+        self._persist_job(job)
+        self._refresh_convert_table()
+        self._status.setText(f"Saved: {job.out_path}")
+
+    def _on_remote_fetch_fail(self, job_id: str, err: str) -> None:
+        QMessageBox.critical(self, "Download from server failed", err)
+
     def closeEvent(self, event) -> None:
         self._persist_all_jobs()
         self._store.close()
         self._dl.stop()
         self._cv.stop()
+        if self._remote is not None:
+            self._remote.stop()
         if self._tray is not None:
             self._tray.hide()
         super().closeEvent(event)

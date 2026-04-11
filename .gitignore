@@ -19,3 +19,6 @@ aur/*.pkg.tar.zst
 aur/*.pkg.tar.zst.sig
 aur/*.tar.gz
 aur/*.tar
+
+# Podman compose local secrets (deploy/podman/)
+deploy/podman/.env
