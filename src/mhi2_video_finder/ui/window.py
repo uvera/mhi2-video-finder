@@ -386,6 +386,11 @@ class MainWindow(QWidget):
         self.search_btn = QPushButton("Search")
         self.search_btn.clicked.connect(self._start_search)
         btn_row.addWidget(self.search_btn)
+        self.select_all_cb = QCheckBox("Select all results")
+        self.select_all_cb.setEnabled(False)
+        self.select_all_cb.toggled.connect(self._set_all_results_checked)
+        btn_row.addWidget(self.select_all_cb)
+        btn_row.addStretch()
         lay.addLayout(btn_row)
 
         self.results_table = QTableWidget(0, 5)
@@ -620,6 +625,10 @@ class MainWindow(QWidget):
         if _seq != self._search_seq:
             return
         self._results = list(rows)
+        self.select_all_cb.blockSignals(True)
+        self.select_all_cb.setChecked(False)
+        self.select_all_cb.blockSignals(False)
+        self.select_all_cb.setEnabled(bool(self._results))
         self.results_table.setRowCount(0)
         from mhi2_video_finder.workflow import fmt_duration
 
@@ -634,12 +643,22 @@ class MainWindow(QWidget):
             self.results_table.setItem(i, 3, QTableWidgetItem(fmt_duration(c.duration)))
             self.results_table.setItem(i, 4, QTableWidgetItem(c.url))
 
+    def _set_all_results_checked(self, checked: bool) -> None:
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        for i in range(self.results_table.rowCount()):
+            it = self.results_table.item(i, 0)
+            if it is not None:
+                it.setCheckState(state)
+
     def _search_failed(self, msg: str, *, _seq: int) -> None:
         if _seq != self._search_seq:
             return
         QMessageBox.critical(self, "Search failed", msg)
 
     def _deselect_result_checkboxes(self) -> None:
+        self.select_all_cb.blockSignals(True)
+        self.select_all_cb.setChecked(False)
+        self.select_all_cb.blockSignals(False)
         for i in range(self.results_table.rowCount()):
             it = self.results_table.item(i, 0)
             if it is not None:
