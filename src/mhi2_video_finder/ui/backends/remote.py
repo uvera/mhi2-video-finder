@@ -96,6 +96,7 @@ class RemoteJobController(QObject):
 
     connection_error = pyqtSignal(str)
     remote_registered = pyqtSignal(str, str)  # local_job_id, remote_job_id (after POST)
+    remote_missing = pyqtSignal(str, str)  # local_job_id, reason (remote job vanished)
     # Short status text for the main window (emitted from worker threads; Qt queues to GUI thread).
     user_status = pyqtSignal(str)
 
@@ -299,6 +300,11 @@ class RemoteJobController(QObject):
                     headers=self._headers(),
                 )
             if r.status_code == 404:
+                self._emit_remote_missing(
+                    local_id,
+                    remote_id,
+                    "Cancel failed because the server no longer has this job id.",
+                )
                 return
             r.raise_for_status()
         except Exception as e:
@@ -309,12 +315,26 @@ class RemoteJobController(QObject):
             with httpx.Client(timeout=30.0) as c:
                 r = c.get(f"{self._base()}/v1/jobs/{remote_id}", headers=self._headers())
             if r.status_code == 404:
+                self._emit_remote_missing(
+                    local_id,
+                    remote_id,
+                    "Status sync failed because the server no longer has this job id.",
+                )
                 return
             r.raise_for_status()
             row = r.json()
             self._apply_status_snapshot(local_id, row)
         except Exception as e:
             self.connection_error.emit(f"Sync failed: {e}")
+
+    def _emit_remote_missing(self, local_id: str, remote_id: str, detail: str) -> None:
+        with self._lock:
+            mapped_remote = self._l2r.get(local_id)
+            if mapped_remote == remote_id:
+                self._l2r.pop(local_id, None)
+            self._r2l.pop(remote_id, None)
+        self._dl_done_sent.discard(local_id)
+        self.remote_missing.emit(local_id, f"Remote job {remote_id} is missing. {detail}")
 
     def _apply_status_snapshot(self, local_id: str, row: dict[str, Any]) -> None:
         st = row.get("status")

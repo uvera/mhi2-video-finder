@@ -85,6 +85,7 @@ class MainWindow(QWidget):
             self._remote = RemoteJobController(lambda: self._settings)
             self._remote.connection_error.connect(self._on_remote_connection_error)
             self._remote.remote_registered.connect(self._on_remote_registered)
+            self._remote.remote_missing.connect(self._on_remote_missing)
             self._dl = self._remote.dl
             self._cv = self._remote.cv
             self._remote.start_ws()
@@ -1135,6 +1136,33 @@ class MainWindow(QWidget):
     def _on_remote_connection_error(self, msg: str) -> None:
         self._status.setText(f"Remote: {msg}")
 
+    def _mark_remote_missing_and_requeue(self, local_id: str, reason: str) -> None:
+        job = self._jobs.get(local_id)
+        if not job:
+            return
+        if self._remote is not None:
+            self._remote.reset_local_tracking(local_id)
+        job.remote_job_id = None
+        job.remote_saved_locally = False
+        job.download_status = "failed"
+        job.download_percent = -1.0
+        job.download_speed = ""
+        job.download_eta = ""
+        job.download_error = reason
+        # Remote jobs are one server-side pipeline; when the remote id disappears,
+        # move the row back to download-failed so Restart re-enqueues end-to-end.
+        job.convert_status = "waiting"
+        job.convert_percent = 0.0
+        job.convert_indeterminate = False
+        job.convert_error = ""
+        self._persist_job(job)
+        self._refresh_downloads_table()
+        self._refresh_convert_table()
+        self._status.setText("Remote job no longer exists on server; click Restart to re-enqueue.")
+
+    def _on_remote_missing(self, local_id: str, reason: str) -> None:
+        self._mark_remote_missing_and_requeue(local_id, reason)
+
     def _save_remote_to_pc(self, job_id: str) -> None:
         job = self._jobs.get(job_id)
         if job:
@@ -1183,6 +1211,19 @@ class MainWindow(QWidget):
         self._status.setText(f"Saved: {job.out_path}")
 
     def _on_remote_fetch_fail(self, job_id: str, err: str) -> None:
+        low = err.lower()
+        if "404" in low and "/v1/jobs/" in low and "/download" in low:
+            self._mark_remote_missing_and_requeue(
+                job_id,
+                "Download failed: remote job no longer exists on the server.",
+            )
+            QMessageBox.warning(
+                self,
+                "Remote job missing",
+                "This server job id no longer exists. The row was moved back to Downloads.\n"
+                "Click Restart to re-enqueue.",
+            )
+            return
         QMessageBox.critical(self, "Download from server failed", err)
 
     def closeEvent(self, event) -> None:

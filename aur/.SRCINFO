@@ -16,6 +16,6 @@ pkgbase = mhi2-video-finder
 	depends = python-typer
 	depends = yt-dlp
 	source = mhi2-video-finder-0.3.0.tar.gz::https://github.com/uvera/mhi2-video-finder/archive/refs/tags/v0.3.0.tar.gz
-	sha256sums = a8b0ffbc1b8fad8ad255c879899a45d3a6e6b09f21249a6d0210d794215cd82b
+	sha256sums = db558e89285c9d60636e8c035d3e1666477943e634c23cff8596f22ea931005b
 
 pkgname = mhi2-video-finder
