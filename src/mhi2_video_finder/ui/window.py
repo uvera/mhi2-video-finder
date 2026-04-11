@@ -151,13 +151,42 @@ class MainWindow(QWidget):
         for jid in list(self._job_order):
             job = self._jobs[jid]
             if job.backend == "remote":
-                if not job.remote_job_id and job.download_status == "queued":
+                remote_state_normalized = False
+                if job.download_status == "downloading":
+                    # "downloading" is transient; after app restart we only trust fresh
+                    # daemon status snapshots/events.
+                    job.download_status = "queued"
+                    job.download_percent = -1.0
+                    job.download_speed = ""
+                    job.download_eta = ""
+                    remote_state_normalized = True
+                if job.convert_status == "converting":
+                    job.convert_status = "queued"
+                    job.convert_percent = 0.0
+                    job.convert_indeterminate = False
+                    remote_state_normalized = True
+
+                if self._remote is None:
+                    if job.download_status in ("queued", "downloading"):
+                        job.download_status = "failed"
+                        job.download_error = (
+                            "Job belongs to remote processing, but the UI is currently running "
+                            "in local mode. Switch backend to remote and restart, or remove this row."
+                        )
+                        remote_state_normalized = True
+                    if remote_state_normalized:
+                        self._persist_job(job)
+                    continue
+
+                if not job.remote_job_id and job.download_status in ("queued", "downloading"):
                     job.download_status = "failed"
                     job.download_error = (
                         "Remote job was never submitted to the server. Remove it and queue again."
                     )
                     self._persist_job(job)
                     continue
+                if remote_state_normalized:
+                    self._persist_job(job)
                 if self._remote and job.remote_job_id:
                     self._remote.register_existing(jid, job.remote_job_id)
                     self._remote.sync_job_from_server(jid, job.remote_job_id)
