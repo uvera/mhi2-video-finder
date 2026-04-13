@@ -7,6 +7,15 @@ cd "$(dirname "$0")"
 # Rootful Podman: use sudo (set USE_SUDO=0 for rootless podman-compose).
 USE_SUDO="${USE_SUDO:-1}"
 
+# Must match services.mhi2-vf.image in compose.yaml (podman-compose tags the build with this).
+MHI2_VF_IMAGE="${MHI2_VF_IMAGE:-mhi2-video-finder-daemon}"
+
+# Rootless `podman build` often runs RUN instructions behind slirp4netns; it can fail with:
+#   failed to read from slirp4netns sync pipe: EOF
+# Using the host network for the build avoids that. podman-compose 1.0.x does not pass compose
+# `build.network`, so this script calls `podman build` directly unless PODMAN_BUILD_NETWORK=default.
+PODMAN_BUILD_NETWORK="${PODMAN_BUILD_NETWORK:-host}"
+
 compose() {
   if [[ "$USE_SUDO" == "1" ]]; then
     sudo podman-compose "$@"
@@ -37,8 +46,8 @@ diag() {
   pman ps -a --filter name=mhi2-vf 2>&2 || true
   echo "--- container Config.Cmd (expect python -m mhi2_video_finder.daemon.main) ---" >&2
   pman inspect mhi2-vf --format '{{json .Config.Cmd}}' 2>&2 || true
-  echo "--- image localhost/mhi2-video-finder-daemon:latest Config.Cmd ---" >&2
-  pman inspect localhost/mhi2-video-finder-daemon:latest --format '{{json .Config.Cmd}}' 2>&2 || true
+  echo "--- image ${MHI2_VF_IMAGE} Config.Cmd ---" >&2
+  pman inspect "${MHI2_VF_IMAGE}" --format '{{json .Config.Cmd}}' 2>&2 || true
   echo "--- app.py on disk (host) ---" >&2
   grep -n "app_version" ../../src/mhi2_video_finder/daemon/app.py 2>/dev/null | head -3 >&2 \
     || echo "(no match or wrong cwd — run from deploy/podman)" >&2
@@ -88,18 +97,25 @@ if ! grep -q "app_version" "$ROOT/src/mhi2_video_finder/daemon/app.py"; then
 fi
 
 if [[ "${PRUNE_IMAGE:-0}" == "1" ]]; then
-  echo "==> PRUNE_IMAGE=1: removing old image tag"
-  pman rmi -f localhost/mhi2-video-finder-daemon:latest 2>/dev/null || true
+  echo "==> PRUNE_IMAGE=1: removing old image tag(s)"
+  pman rmi -f "${MHI2_VF_IMAGE}" 2>/dev/null || true
+  pman rmi -f "localhost/${MHI2_VF_IMAGE}:latest" 2>/dev/null || true
 fi
 
 echo "==> compose down (USE_SUDO=$USE_SUDO)"
 compose down || echo "Note: compose down exited non-zero (ok if stack was already stopped)." >&2
 
-echo "==> compose build --no-cache"
-compose build --no-cache
+if [[ "$PODMAN_BUILD_NETWORK" == "default" ]]; then
+  echo "==> compose build --no-cache (PODMAN_BUILD_NETWORK=default)"
+  compose build --no-cache
+else
+  echo "==> podman build --network=${PODMAN_BUILD_NETWORK} --no-cache (not via podman-compose)"
+  echo "    Image: ${MHI2_VF_IMAGE}  Context: ${ROOT}" >&2
+  pman build --network="${PODMAN_BUILD_NETWORK}" --no-cache -f "${ROOT}/Dockerfile" -t "${MHI2_VF_IMAGE}" "${ROOT}"
+fi
 
 echo "==> Built image CMD (expect python -m ...):" >&2
-pman inspect localhost/mhi2-video-finder-daemon:latest --format '{{json .Config.Cmd}}' 2>&2 || true
+pman inspect "${MHI2_VF_IMAGE}" --format '{{json .Config.Cmd}}' 2>&2 || true
 
 echo "==> compose up -d"
 compose up -d

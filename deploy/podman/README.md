@@ -20,6 +20,8 @@ If healthz still has no `app_version`, the script prints **Diagnostics** (host v
 
 **podman-compose 1.0.x:** `compose build` only checks for **`Dockerfile`** inside `context` (see `OSError: Dockerfile not found in ../..`). The repo root **`Dockerfile`** is a **symlink to `Containerfile`**. Do not delete it if you use `podman-compose`; modern `docker compose` / Podman 5 still work the same.
 
+**Rootless build / slirp4netns:** If `podman-compose build` dies on `RUN pip install …` with `failed to read from slirp4netns sync pipe: EOF`, rootless networking for build steps failed. **`./rebuild-daemon.sh` defaults to `podman build --network=host`** (build-only; the running container still uses normal compose networking). To use plain `podman-compose build` again: `PODMAN_BUILD_NETWORK=default ./rebuild-daemon.sh`. Manual one-off: from repo root, `podman build --network=host --no-cache -f Dockerfile -t mhi2-video-finder-daemon .` then `podman-compose up -d` from `deploy/podman/`.
+
 To force dropping the old tagged image before build: `PRUNE_IMAGE=1 ./rebuild-daemon.sh`.
 
 Or manually:

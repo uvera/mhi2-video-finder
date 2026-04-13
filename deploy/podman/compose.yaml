@@ -22,6 +22,8 @@ services:
       # Repo root. podman-compose 1.0.x only looks for a file named "Dockerfile" in the
       # context dir (ignores dockerfile:); repo root has Dockerfile -> Containerfile symlink.
       context: ../..
+      # Honored by docker compose / podman compose; ignored by podman-compose 1.0.x (use rebuild-daemon.sh).
+      network: host
     image: mhi2-video-finder-daemon
     container_name: mhi2-vf
     ports:
