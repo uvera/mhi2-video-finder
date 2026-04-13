@@ -23,6 +23,11 @@ pman() {
   fi
 }
 
+# python:3.12-slim has no curl; use stdlib for in-container checks.
+exec_py() {
+  pman exec mhi2-vf python -c "$1"
+}
+
 diag() {
   echo "" >&2
   echo "========== Diagnostics ==========" >&2
@@ -30,15 +35,25 @@ diag() {
   echo "Host healthz (127.0.0.1:${PORT}): $(curl -sS --connect-timeout 2 "http://127.0.0.1:${PORT}/healthz" 2>/dev/null || echo '(failed)')" >&2
   echo "--- podman ps (name mhi2-vf) ---" >&2
   pman ps -a --filter name=mhi2-vf 2>&2 || true
-  echo "--- image for container mhi2-vf ---" >&2
-  pman inspect mhi2-vf --format 'ImageID={{.Image}} Created={{.Created}}' 2>&2 || echo "(no container mhi2-vf)" >&2
-  echo "--- app.py on disk (host) has app_version? ---" >&2
+  echo "--- container Config.Cmd (expect python -m mhi2_video_finder.daemon.main) ---" >&2
+  pman inspect mhi2-vf --format '{{json .Config.Cmd}}' 2>&2 || true
+  echo "--- image localhost/mhi2-video-finder-daemon:latest Config.Cmd ---" >&2
+  pman inspect localhost/mhi2-video-finder-daemon:latest --format '{{json .Config.Cmd}}' 2>&2 || true
+  echo "--- app.py on disk (host) ---" >&2
   grep -n "app_version" ../../src/mhi2_video_finder/daemon/app.py 2>/dev/null | head -3 >&2 \
-    || echo "(no match or wrong cwd — must run from deploy/podman)" >&2
-  echo "--- same check inside container /app/src ---" >&2
-  pman exec mhi2-vf grep -n "app_version" /app/src/mhi2_video_finder/daemon/app.py 2>&2 || echo "(podman exec or grep failed)" >&2
-  echo "--- healthz from INSIDE container (bypasses host port confusion) ---" >&2
-  pman exec mhi2-vf curl -sS --connect-timeout 2 http://127.0.0.1:8765/healthz 2>&2 || echo "(curl inside container failed)" >&2
+    || echo "(no match or wrong cwd — run from deploy/podman)" >&2
+  echo "--- app_version string inside container /app/src (python read) ---" >&2
+  exec_py "
+from pathlib import Path
+p = Path('/app/src/mhi2_video_finder/daemon/app.py')
+t = p.read_text(encoding='utf-8') if p.is_file() else ''
+print('file_exists', p.is_file(), 'has_app_version', 'app_version' in t)
+" 2>&2 || echo "(podman exec failed)" >&2
+  echo "--- healthz from INSIDE container (python urllib) ---" >&2
+  exec_py "
+import urllib.request
+print(urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=3).read().decode())
+" 2>&2 || echo "(in-container healthz failed)" >&2
   echo "--- NDJSON debug dir in container ---" >&2
   pman exec mhi2-vf ls -la /var/lib/mhi2-video-finder/debug 2>&2 || true
   echo "=================================" >&2
@@ -53,11 +68,34 @@ if [[ "$USE_SUDO" == "1" ]] && ! command -v sudo >/dev/null 2>&1; then
   exit 1
 fi
 
+ROOT="$(cd ../.. && pwd -P)"
+echo "==> Build context (repo root): $ROOT"
+if [[ ! -f "$ROOT/Containerfile" ]]; then
+  echo "ERROR: missing $ROOT/Containerfile" >&2
+  exit 1
+fi
+if ! grep -q "mhi2_video_finder.daemon.main" "$ROOT/Containerfile"; then
+  echo "ERROR: $ROOT/Containerfile does not CMD python -m mhi2_video_finder.daemon.main (git pull?)" >&2
+  exit 1
+fi
+if ! grep -q "app_version" "$ROOT/src/mhi2_video_finder/daemon/app.py"; then
+  echo "ERROR: host app.py has no app_version (wrong tree?)" >&2
+  exit 1
+fi
+
+if [[ "${PRUNE_IMAGE:-0}" == "1" ]]; then
+  echo "==> PRUNE_IMAGE=1: removing old image tag"
+  pman rmi -f localhost/mhi2-video-finder-daemon:latest 2>/dev/null || true
+fi
+
 echo "==> compose down (USE_SUDO=$USE_SUDO)"
 compose down || echo "Note: compose down exited non-zero (ok if stack was already stopped)." >&2
 
 echo "==> compose build --no-cache"
 compose build --no-cache
+
+echo "==> Built image CMD (expect python -m ...):" >&2
+pman inspect localhost/mhi2-video-finder-daemon:latest --format '{{json .Config.Cmd}}' 2>&2 || true
 
 echo "==> compose up -d"
 compose up -d
@@ -91,7 +129,7 @@ if [[ "$ok" != "1" ]]; then
   exit 1
 fi
 
-echo "==> Optional: in-container healthz"
-pman exec mhi2-vf curl -sS http://127.0.0.1:8765/healthz || true
+echo "==> In-container healthz (sanity):"
+exec_py "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8765/healthz').read().decode())" || true
 echo ""
 exit 0

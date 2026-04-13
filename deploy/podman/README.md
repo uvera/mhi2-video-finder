@@ -16,7 +16,11 @@ From **`deploy/podman/`** after `git pull`:
 
 The script runs **`sudo podman-compose`** by default (rootful Podman). For rootless: `USE_SUDO=0 ./rebuild-daemon.sh`.
 
-If healthz still has no `app_version`, the script prints **Diagnostics** (host vs in-container `curl`, `grep` in `/app/src`, `podman ps`). Use that output to see whether the wrong container is bound to the port or the image never picked up new `src/`.
+If healthz still has no `app_version`, the script prints **Diagnostics** (host vs in-container checks via **Python** inside the slim image, `podman inspect` **Config.Cmd**, `podman ps`). Use that output to see whether the image was built from the wrong `Containerfile` (CMD stuck on `mhi2-video-finder-daemon` instead of `python -m …`).
+
+**Compose gotcha (fixed in-tree):** `dockerfile: Containerfile` with `context: ../..` is resolved incorrectly by some **podman-compose** versions, producing a **stale image**. This repo uses **`dockerfile: ../../Containerfile`** (path relative to the compose file). If you overrode `dockerfile` locally, fix it to match [compose.yaml](compose.yaml).
+
+To force dropping the old tagged image before build: `PRUNE_IMAGE=1 ./rebuild-daemon.sh`.
 
 Or manually:
 

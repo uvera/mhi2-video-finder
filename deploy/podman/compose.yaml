@@ -19,8 +19,11 @@
 services:
   mhi2-vf:
     build:
+      # context = repo root (parent of deploy/podman)
       context: ../..
-      dockerfile: Containerfile
+      # Must be path relative to *this* compose file — not only "Containerfile", or
+      # some podman-compose versions resolve the wrong Dockerfile and you get a stale image.
+      dockerfile: ../../Containerfile
     image: mhi2-video-finder-daemon
     container_name: mhi2-vf
     ports:
