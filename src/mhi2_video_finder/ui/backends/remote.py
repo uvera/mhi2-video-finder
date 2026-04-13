@@ -505,9 +505,13 @@ class RemoteJobController(QObject):
                 row.get("speed") or "",
                 row.get("eta") or "",
             )
-        if st == "converting" or (st == "downloading" and phase == "convert"):
+        if st == "downloading" and phase == "convert":
             self._emit_dl_done_bridge(local_id)
-            self.cv.progress.emit(local_id, float(row.get("convert_percent") or 0.0))
+        if st == "converting":
+            self._emit_dl_done_bridge(local_id)
+            cp = row.get("convert_percent")
+            cp_f = float(cp) if isinstance(cp, (int, float)) else -1.0
+            self.cv.progress.emit(local_id, None if cp_f < 0.0 else cp_f)
         if st == "done":
             self._emit_dl_done_bridge(local_id)
             self.cv.item_done.emit(local_id)
@@ -618,7 +622,7 @@ class RemoteJobController(QObject):
                 self.dl.progress.emit(lid, pct, str(speed), str(eta))
             elif phase == "convert":
                 self._emit_dl_done_bridge(lid)
-                self.cv.progress.emit(lid, None if indet and pct < 0 else pct)
+                self.cv.progress.emit(lid, None if indet or pct < 0.0 else pct)
         elif mtype == "job_done":
             self._emit_dl_done_bridge(lid)
             self.cv.item_done.emit(lid)

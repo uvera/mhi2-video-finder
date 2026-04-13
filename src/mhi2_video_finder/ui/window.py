@@ -286,14 +286,18 @@ class MainWindow(QWidget):
             if phase == "convert":
                 job.download_status = "done"
                 job.download_percent = 100.0
-                job.convert_status = "converting"
+                # Daemon keeps status "downloading" + phase "convert" with convert_percent -1
+                # until the convert worker starts; that is a convert queue slot, not ffmpeg running.
                 cp = row.get("convert_percent")
-                if isinstance(cp, (int, float)):
-                    job.convert_percent = float(cp)
+                cp_f = float(cp) if isinstance(cp, (int, float)) else -1.0
+                if cp_f >= 0.0:
+                    job.convert_status = "converting"
+                    job.convert_percent = cp_f
                     job.convert_indeterminate = False
                 else:
+                    job.convert_status = "queued"
                     job.convert_percent = 0.0
-                    job.convert_indeterminate = True
+                    job.convert_indeterminate = False
             return
 
         if st == "converting":
@@ -301,8 +305,9 @@ class MainWindow(QWidget):
             job.download_percent = 100.0
             job.convert_status = "converting"
             cp = row.get("convert_percent")
-            if isinstance(cp, (int, float)):
-                job.convert_percent = float(cp)
+            cp_f = float(cp) if isinstance(cp, (int, float)) else -1.0
+            if cp_f >= 0.0:
+                job.convert_percent = cp_f
                 job.convert_indeterminate = False
             else:
                 job.convert_percent = 0.0
@@ -1370,7 +1375,7 @@ class MainWindow(QWidget):
             detail = "Cancelled"
         else:
             detail = st
-        if job.convert_indeterminate:
+        if job.convert_indeterminate or job.convert_percent < 0.0:
             prog_txt = "…"
         else:
             prog_txt = f"{job.convert_percent:.1f}%"
@@ -1651,7 +1656,7 @@ class MainWindow(QWidget):
         if not job:
             return
         job.convert_status = "converting"
-        if pct is None:
+        if pct is None or (isinstance(pct, (int, float)) and float(pct) < 0.0):
             job.convert_indeterminate = True
         else:
             job.convert_indeterminate = False
