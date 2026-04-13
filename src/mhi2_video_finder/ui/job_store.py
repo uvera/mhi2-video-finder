@@ -85,7 +85,8 @@ class JobStore:
 
     def _upsert_no_commit(self, job: UiJob, seq: int) -> None:
         if job.download_status == "done" and job.convert_status == "done":
-            if job.backend == "remote" and not job.remote_saved_locally:
+            if job.backend == "remote":
+                # Keep rows until the user removes them (pending or completed Save to PC).
                 pass
             else:
                 self._conn.execute("DELETE FROM jobs WHERE job_id = ?", (job.job_id,))

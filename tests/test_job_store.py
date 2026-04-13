@@ -61,3 +61,32 @@ def test_job_store_deletes_when_fully_done(tmp_path: Path) -> None:
     store.upsert(job, 0)
     assert store.load_all() == []
     store.close()
+
+
+def test_job_store_keeps_remote_fully_done(tmp_path: Path) -> None:
+    """Remote jobs stay in the DB after conversion (and Save to PC) until the user removes them."""
+    store = JobStore(tmp_path / "r.sqlite")
+    vid = "y" * 11
+    cand = VideoCandidate(
+        video_id=vid,
+        title="Remote done",
+        duration=None,
+        channel="c",
+        url=f"https://youtu.be/{vid}",
+    )
+    job = UiJob(
+        job_id="remote-done",
+        candidate=cand,
+        out_path=tmp_path / "out.mp4",
+        backend="remote",
+        remote_job_id="srv-1",
+        remote_saved_locally=True,
+        download_status="done",
+        convert_status="done",
+    )
+    store.upsert(job, 0)
+    loaded = store.load_all()
+    assert len(loaded) == 1
+    assert loaded[0].job_id == "remote-done"
+    assert loaded[0].remote_saved_locally is True
+    store.close()

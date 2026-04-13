@@ -364,9 +364,6 @@ class MainWindow(QWidget):
             if job.backend != "remote" and outp.is_file() and outp.stat().st_size >= 4096:
                 self._store.delete(job.job_id)
                 continue
-            if job.backend == "remote" and job.convert_status == "done" and job.remote_saved_locally:
-                self._store.delete(job.job_id)
-                continue
             self._jobs[job.job_id] = job
             self._job_order.append(job.job_id)
 
@@ -1374,12 +1371,10 @@ class MainWindow(QWidget):
         return (group, (job.candidate.title or "").lower())
 
     def _convert_status_progress(self, job: UiJob) -> tuple[str, str]:
-        if (
-            job.backend == "remote"
-            and job.convert_status == "done"
-            and not job.remote_saved_locally
-        ):
-            return "Done on server — save to PC", "100.0%"
+        if job.backend == "remote" and job.convert_status == "done":
+            if not job.remote_saved_locally:
+                return "Done on server — save to PC", "100.0%"
+            return "Saved to PC", "100.0%"
         st = job.convert_status
         if st == "converting":
             detail = "Converting"
@@ -1389,6 +1384,8 @@ class MainWindow(QWidget):
             detail = job.convert_error or "Failed"
         elif st == "cancelled":
             detail = "Cancelled"
+        elif st == "done":
+            detail = "Done"
         else:
             detail = st
         if job.convert_indeterminate or job.convert_percent < 0.0:
@@ -1433,19 +1430,7 @@ class MainWindow(QWidget):
         return w
 
     def _refresh_convert_table(self) -> None:
-        rows = [
-            self._jobs[j]
-            for j in self._job_order
-            if self._jobs[j].download_status == "done"
-            and (
-                self._jobs[j].convert_status != "done"
-                or (
-                    self._jobs[j].backend == "remote"
-                    and self._jobs[j].convert_status == "done"
-                    and not self._jobs[j].remote_saved_locally
-                )
-            )
-        ]
+        rows = [self._jobs[j] for j in self._job_order if self._jobs[j].download_status == "done"]
         rows.sort(key=self._convert_queue_sort_key)
         self.convert_table.setRowCount(len(rows))
         for i, job in enumerate(rows):
@@ -1493,16 +1478,12 @@ class MainWindow(QWidget):
             and job.convert_status in ("failed", "cancelled", "done")
         )
         restart_btn.clicked.connect(lambda *, jid=job.job_id: self._rerun_convert_for_job(jid))
-        need_save = (
-            job.backend == "remote"
-            and job.convert_status == "done"
-            and not job.remote_saved_locally
-        )
-        overwrite = need_save and job.out_path.is_file()
+        need_save = job.backend == "remote" and job.convert_status == "done"
+        overwrite = need_save and (job.out_path.is_file() or job.remote_saved_locally)
         save_label = "ReSave to PC" if overwrite else "Save to PC"
         save_btn = QPushButton(save_label)
         save_btn.setVisible(need_save)
-        if overwrite:
+        if need_save and job.out_path.is_file():
             save_btn.setToolTip("A file already exists at this path; saving will overwrite it.")
         save_btn.clicked.connect(lambda *, jid=job.job_id: self._save_remote_to_pc(jid))
         remove_btn = QPushButton("Remove")
