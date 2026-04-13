@@ -64,8 +64,12 @@ def debug_log_candidate_paths() -> list[Path]:
 
 
 def log_daemon_visible(message: str, *, level: int = logging.INFO) -> None:
-    """Write to stderr and to uvicorn's logger (shows in podman/docker logs reliably)."""
+    """stdout print + stderr + uvicorn logger (some hosts only show one stream reliably)."""
     line = message.rstrip("\n")
+    try:
+        print(line, flush=True)
+    except Exception:
+        pass
     try:
         sys.stderr.write(line + "\n")
         sys.stderr.flush()

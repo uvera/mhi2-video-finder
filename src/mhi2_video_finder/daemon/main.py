@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import os
 
+from mhi2_video_finder import __version__
+
 
 def main() -> None:
     import uvicorn
+
+    # Unbuffered marker: if this never appears in `podman logs`, the image is stale.
+    print(f"mhi2-vf: mhi2-video-finder {__version__} daemon (pre-uvicorn)", flush=True)
 
     host = (os.environ.get("DAEMON_HOST") or "127.0.0.1").strip()
     port = int((os.environ.get("DAEMON_PORT") or "8765").strip())

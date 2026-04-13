@@ -36,11 +36,12 @@ Some `podman-compose` versions print their own noise; `podman logs` shows only t
 
 **If `debug/` is empty after jobs run**
 
-1. Rebuild so the image includes current code: `podman compose up -d --build` or `podman-compose up -d --build`.
-2. Confirm the variable inside the container: `podman exec mhi2-vf env | grep MHI2_VF_DEBUG_LOG_PATH`
-3. On startup you should see **`mhi2-vf[daemon]: NDJSON debug paths`** and **`NDJSON debug active -> ...`** as **uvicorn INFO lines** in **`podman logs mhi2-vf 2>&1`** (if those lines are missing, rebuild the image — the running container is too old).
-4. Watch for `emit_debug_log: could not write` in the same logs if every path fails.
-5. Optional: `podman exec mhi2-vf sh -c 'touch /var/lib/mhi2-video-finder/debug/.write-test && ls -la /var/lib/mhi2-video-finder/debug/'`
+1. Rebuild so the image includes current code: `podman-compose up -d --build` (or `podman compose ...`). If logs still look unchanged, force a clean build: `podman-compose build --no-cache` then `podman-compose up -d`.
+2. The first line of container output should include **`mhi2-vf: mhi2-video-finder <version> daemon (pre-uvicorn)`**. If that string never appears, the running image is not built from your current checkout.
+3. Confirm the variable inside the container: `podman exec mhi2-vf env | grep MHI2_VF_DEBUG_LOG_PATH`
+4. After the pre-uvicorn line you should see **`mhi2-vf[daemon]: NDJSON debug paths`** and **`NDJSON debug active -> ...`** in **`podman logs mhi2-vf 2>&1`** (plain print lines, not only `INFO:` from uvicorn).
+5. Watch for `emit_debug_log: could not write` in the same logs if every path fails.
+6. Optional: `podman exec mhi2-vf sh -c 'touch /var/lib/mhi2-video-finder/debug/.write-test && ls -la /var/lib/mhi2-video-finder/debug/'`
 
 `/tmp/mhi2-video-finder/debug-runtime.log` only appears after a successful fallback write (when the bind-mounted path is not used or failed first). Prefer checking the path printed after **`NDJSON debug active ->`**.
 
