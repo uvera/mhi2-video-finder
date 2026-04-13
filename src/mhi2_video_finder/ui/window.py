@@ -24,6 +24,8 @@ from PyQt6.QtWidgets import (
     QStyle,
     QSystemTrayIcon,
     QTabWidget,
+    QTextEdit,
+    QHeaderView,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -45,7 +47,7 @@ _ENCODER_CHOICES: tuple[tuple[str, str], ...] = (
     ("h264_nvenc (NVIDIA GPU)", "h264_nvenc"),
 )
 from .models import UiJob
-from .workers import ConvertService, DownloadService, SearchWorker, new_job_id
+from .workers import BulkUrlResolveWorker, ConvertService, DownloadService, SearchWorker, new_job_id
 
 
 class _RemoteFetchBridge(QObject):
@@ -67,6 +69,8 @@ class MainWindow(QWidget):
 
         self._search_worker: SearchWorker | None = None
         self._search_seq: int = 0
+        self._bulk_resolve_worker: BulkUrlResolveWorker | None = None
+        self._bulk_resolve_seq: int = 0
         self._tray: QSystemTrayIcon | None = None
         if QSystemTrayIcon.isSystemTrayAvailable():
             self._tray = QSystemTrayIcon(self)
@@ -403,6 +407,28 @@ class MainWindow(QWidget):
         lay.addWidget(src_box)
         self._update_source_widgets()
 
+        paste_box = QGroupBox("Paste many video URLs")
+        paste_lay = QVBoxLayout(paste_box)
+        self.bulk_urls_edit = QTextEdit()
+        self.bulk_urls_edit.setPlaceholderText(
+            "One URL per line (YouTube watch, youtu.be, Shorts, …). "
+            "Empty lines and lines starting with # are ignored."
+        )
+        self.bulk_urls_edit.setAcceptRichText(False)
+        self.bulk_urls_edit.setMinimumHeight(100)
+        self.bulk_urls_edit.setToolTip(
+            "Resolve each link with yt-dlp, then queue downloads using the subfolder and "
+            "transcode options below."
+        )
+        paste_lay.addWidget(self.bulk_urls_edit)
+        bulk_btn_row = QHBoxLayout()
+        self.bulk_queue_btn = QPushButton("Queue pasted URLs for download")
+        self.bulk_queue_btn.clicked.connect(self._start_queue_pasted_urls)
+        bulk_btn_row.addWidget(self.bulk_queue_btn)
+        bulk_btn_row.addStretch()
+        paste_lay.addLayout(bulk_btn_row)
+        lay.addWidget(paste_box)
+
         opt_row = QHBoxLayout()
         opt_row.addWidget(QLabel("Result limit (0 = no limit):"))
         self.limit_spin = QSpinBox()
@@ -724,47 +750,62 @@ class MainWindow(QWidget):
             base = self._settings.merged_output_dir()
         return ensure_output_dir(base / sub)
 
+    @staticmethod
+    def _parse_pasted_video_urls(text: str) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for line in text.splitlines():
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            if s not in seen:
+                seen.add(s)
+                out.append(s)
+        return out
+
+    def _enqueue_job_for_candidate(self, c: VideoCandidate) -> None:
+        out_folder = self._output_folder()
+        self._cv.set_no_embed(self.no_embed_cb.isChecked())
+        ne = self.no_embed_cb.isChecked()
+        jid = new_job_id()
+        stem = safe_stem(c.title, c.video_id)
+        outp = unique_out_path(out_folder, stem, c.video_id)
+        backend = "remote" if self._use_remote else "local"
+        job = UiJob(
+            job_id=jid,
+            candidate=c,
+            out_path=outp,
+            no_embed=ne,
+            backend=backend,
+            remote_saved_locally=backend != "remote",
+        )
+        self._jobs[jid] = job
+        self._job_order.append(jid)
+        if self._use_remote and self._remote:
+            sub = self.subdir_edit.text().strip() or "gui-downloads"
+            self._remote.set_pending_job(
+                jid,
+                subdir=sub,
+                output_stem=stem,
+                video_id=c.video_id,
+                title=c.title,
+                channel=c.channel,
+                no_embed=ne,
+            )
+        self._dl.enqueue(jid, c.url)
+        job.download_status = "queued"
+        self._persist_job(job)
+
     def _queue_selected(self) -> None:
         if not self._results:
             QMessageBox.information(self, "Queue", "Run a search first.")
             return
-        out_folder = self._output_folder()
-        self._cv.set_no_embed(self.no_embed_cb.isChecked())
-        ne = self.no_embed_cb.isChecked()
         count = 0
         for i in range(self.results_table.rowCount()):
             it = self.results_table.item(i, 0)
             if it is None or it.checkState() != Qt.CheckState.Checked:
                 continue
-            c = self._results[i]
-            jid = new_job_id()
-            stem = safe_stem(c.title, c.video_id)
-            outp = unique_out_path(out_folder, stem, c.video_id)
-            backend = "remote" if self._use_remote else "local"
-            job = UiJob(
-                job_id=jid,
-                candidate=c,
-                out_path=outp,
-                no_embed=ne,
-                backend=backend,
-                remote_saved_locally=backend != "remote",
-            )
-            self._jobs[jid] = job
-            self._job_order.append(jid)
-            if self._use_remote and self._remote:
-                sub = self.subdir_edit.text().strip() or "gui-downloads"
-                self._remote.set_pending_job(
-                    jid,
-                    subdir=sub,
-                    output_stem=stem,
-                    video_id=c.video_id,
-                    title=c.title,
-                    channel=c.channel,
-                    no_embed=ne,
-                )
-            self._dl.enqueue(jid, c.url)
-            job.download_status = "queued"
-            self._persist_job(job)
+            self._enqueue_job_for_candidate(self._results[i])
             count += 1
         if count == 0:
             QMessageBox.information(self, "Queue", "Check one or more videos to queue.")
@@ -774,31 +815,261 @@ class MainWindow(QWidget):
         self._refresh_downloads_table()
         self._refresh_convert_table()
 
+    def _start_queue_pasted_urls(self) -> None:
+        urls = self._parse_pasted_video_urls(self.bulk_urls_edit.toPlainText())
+        if not urls:
+            QMessageBox.information(
+                self,
+                "Paste URLs",
+                "Paste one or more video URLs (one per line), then try again.",
+            )
+            return
+
+        self._settings = load_settings(Path(self.config_edit.text().strip()) if self.config_edit.text().strip() else None)
+
+        if self._bulk_resolve_worker and self._bulk_resolve_worker.isRunning():
+            self._bulk_resolve_worker.requestInterruption()
+
+        self._bulk_resolve_seq += 1
+        run_seq = self._bulk_resolve_seq
+        self.bulk_queue_btn.setEnabled(False)
+        self._status.setText(f"Resolving {len(urls)} pasted URL(s)…")
+
+        self._bulk_resolve_worker = BulkUrlResolveWorker(urls, self._settings, parent=self)
+        self._bulk_resolve_worker.finished_ok.connect(partial(self._bulk_resolve_finished, _seq=run_seq))
+        self._bulk_resolve_worker.finished.connect(self._bulk_resolve_thread_done)
+        self._bulk_resolve_worker.start()
+
+    def _bulk_resolve_thread_done(self) -> None:
+        worker = self.sender()
+        if worker is not self._bulk_resolve_worker:
+            if isinstance(worker, BulkUrlResolveWorker):
+                worker.deleteLater()
+            return
+        self.bulk_queue_btn.setEnabled(True)
+        self._bulk_resolve_worker.deleteLater()
+        self._bulk_resolve_worker = None
+
+    def _bulk_resolve_finished(
+        self,
+        candidates: list,
+        failures: list,
+        *,
+        _seq: int,
+    ) -> None:
+        if _seq != self._bulk_resolve_seq:
+            return
+        ok = [c for c in candidates if isinstance(c, VideoCandidate)]
+        bad: list[tuple[str, str]] = []
+        for item in failures:
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                u, err = item[0], item[1]
+                if isinstance(u, str) and isinstance(err, str):
+                    bad.append((u, err))
+
+        if not ok and bad:
+            lines = "\n".join(f"{u}\n  → {e}" for u, e in bad[:8])
+            more = f"\n… and {len(bad) - 8} more" if len(bad) > 8 else ""
+            QMessageBox.critical(
+                self,
+                "Could not resolve URLs",
+                f"No links could be resolved:\n\n{lines}{more}",
+            )
+            self._status.setText("Pasted URL resolution failed.")
+            return
+
+        for c in ok:
+            self._enqueue_job_for_candidate(c)
+        self._notify_queued(len(ok))
+        self._refresh_downloads_table()
+        self._refresh_convert_table()
+
+        if bad:
+            lines = "\n".join(f"{u}\n  → {e}" for u, e in bad[:6])
+            more = f"\n… and {len(bad) - 6} more" if len(bad) > 6 else ""
+            QMessageBox.warning(
+                self,
+                "Some URLs skipped",
+                f"Queued {len(ok)} video(s). These lines failed:\n\n{lines}{more}",
+            )
+        else:
+            self._status.setText(f"Queued {len(ok)} video(s) from pasted URLs.")
+
     def _build_downloads_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
-        self.downloads_table = QTableWidget(0, 5)
-        self.downloads_table.setHorizontalHeaderLabels(["Title", "Status", "Progress", "Speed / ETA", "Actions"])
-        self.downloads_table.horizontalHeader().setStretchLastSection(True)
+        bulk = QHBoxLayout()
+        sa = QPushButton("Select all")
+        sa.clicked.connect(partial(self._set_all_queue_checks, "downloads", True))
+        clr = QPushButton("Clear selection")
+        clr.clicked.connect(partial(self._set_all_queue_checks, "downloads", False))
+        cancel_sel = QPushButton("Cancel selected")
+        cancel_sel.setToolTip("Stop the download for each checked row that is queued or in progress.")
+        cancel_sel.clicked.connect(self._cancel_selected_downloads)
+        remove_sel = QPushButton("Remove selected")
+        remove_sel.setToolTip("Remove checked rows from the queue (one confirmation for all).")
+        remove_sel.clicked.connect(partial(self._remove_selected_queue_jobs, "downloads"))
+        bulk.addWidget(sa)
+        bulk.addWidget(clr)
+        bulk.addWidget(cancel_sel)
+        bulk.addWidget(remove_sel)
+        bulk.addStretch()
+        lay.addLayout(bulk)
+        self.downloads_table = QTableWidget(0, 6)
+        self.downloads_table.setHorizontalHeaderLabels(
+            ["", "Title", "Status", "Progress", "Speed / ETA", "Actions"]
+        )
+        hh = self.downloads_table.horizontalHeader()
+        hh.setStretchLastSection(True)
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        hh.resizeSection(0, 28)
         lay.addWidget(self.downloads_table)
         return w
 
     def _build_convert_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
-        self.convert_table = QTableWidget(0, 4)
-        self.convert_table.setHorizontalHeaderLabels(["Title", "Status", "Progress", "Actions"])
-        self.convert_table.horizontalHeader().setStretchLastSection(True)
+        bulk = QHBoxLayout()
+        sa = QPushButton("Select all")
+        sa.clicked.connect(partial(self._set_all_queue_checks, "convert", True))
+        clr = QPushButton("Clear selection")
+        clr.clicked.connect(partial(self._set_all_queue_checks, "convert", False))
+        cancel_sel = QPushButton("Cancel selected")
+        cancel_sel.setToolTip("Stop conversion for each checked row that is queued or in progress.")
+        cancel_sel.clicked.connect(self._cancel_selected_converts)
+        remove_sel = QPushButton("Remove selected")
+        remove_sel.setToolTip("Remove checked rows from the queue (one confirmation for all).")
+        remove_sel.clicked.connect(partial(self._remove_selected_queue_jobs, "convert"))
+        bulk.addWidget(sa)
+        bulk.addWidget(clr)
+        bulk.addWidget(cancel_sel)
+        bulk.addWidget(remove_sel)
+        bulk.addStretch()
+        lay.addLayout(bulk)
+        self.convert_table = QTableWidget(0, 5)
+        self.convert_table.setHorizontalHeaderLabels(["", "Title", "Status", "Progress", "Actions"])
+        ch = self.convert_table.horizontalHeader()
+        ch.setStretchLastSection(True)
+        ch.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        ch.resizeSection(0, 28)
         lay.addWidget(self.convert_table)
         return w
 
     @staticmethod
     def _row_index_for_job_id(table: QTableWidget, job_id: str) -> int:
         for i in range(table.rowCount()):
-            it = table.item(i, 0)
+            it = table.item(i, 1)
             if it is not None and it.data(Qt.ItemDataRole.UserRole) == job_id:
                 return i
         return -1
+
+    def _checked_job_ids_from_queue_table(self, table: QTableWidget) -> list[str]:
+        out: list[str] = []
+        for i in range(table.rowCount()):
+            chk = table.item(i, 0)
+            if chk is None or chk.checkState() != Qt.CheckState.Checked:
+                continue
+            title_it = table.item(i, 1)
+            if title_it is None:
+                continue
+            jid = title_it.data(Qt.ItemDataRole.UserRole)
+            if isinstance(jid, str):
+                out.append(jid)
+        return out
+
+    def _set_all_queue_checks(self, which: str, checked: bool) -> None:
+        table = self.downloads_table if which == "downloads" else self.convert_table
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        for i in range(table.rowCount()):
+            it = table.item(i, 0)
+            if it is not None:
+                it.setCheckState(state)
+
+    def _cancel_selected_downloads(self) -> None:
+        ids = self._checked_job_ids_from_queue_table(self.downloads_table)
+        if not ids:
+            QMessageBox.information(self, "Cancel", "Check one or more download rows first.")
+            return
+        n = 0
+        for jid in ids:
+            job = self._jobs.get(jid)
+            if job and job.download_status in ("queued", "downloading"):
+                self._dl.cancel_download(jid)
+                n += 1
+        if n == 0:
+            QMessageBox.information(
+                self,
+                "Cancel",
+                "None of the checked rows are queued or downloading (cancel is only for active downloads).",
+            )
+        else:
+            self._status.setText(f"Cancelled download for {n} job(s).")
+
+    def _cancel_selected_converts(self) -> None:
+        ids = self._checked_job_ids_from_queue_table(self.convert_table)
+        if not ids:
+            QMessageBox.information(self, "Cancel", "Check one or more convert rows first.")
+            return
+        n = 0
+        for jid in ids:
+            job = self._jobs.get(jid)
+            if job and job.convert_status in ("queued", "waiting", "converting"):
+                self._cv.cancel_convert(jid)
+                n += 1
+        if n == 0:
+            QMessageBox.information(
+                self,
+                "Cancel",
+                "None of the checked rows are queued or converting.",
+            )
+        else:
+            self._status.setText(f"Cancelled conversion for {n} job(s).")
+
+    def _remove_selected_queue_jobs(self, which: str) -> None:
+        table = self.downloads_table if which == "downloads" else self.convert_table
+        ids = self._checked_job_ids_from_queue_table(table)
+        if not ids:
+            QMessageBox.information(self, "Remove", "Check one or more rows first.")
+            return
+        titles = [self._jobs[j].candidate.title for j in ids if j in self._jobs]
+        preview = "\n".join(f"• {t}" for t in titles[:8])
+        more = f"\n… and {len(titles) - 8} more" if len(titles) > 8 else ""
+        ent_word = "entry" if len(ids) == 1 else "entries"
+        if (
+            QMessageBox.question(
+                self,
+                "Remove from queue",
+                f"Remove {len(ids)} {ent_word} from the download/convert queue?\n\n"
+                f"{preview}{more}\n\n"
+                "Files already on disk are not deleted.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        self._purge_jobs_from_queue(ids)
+
+    def _purge_jobs_from_queue(self, job_ids: list[str]) -> None:
+        for job_id in job_ids:
+            job = self._jobs.get(job_id)
+            if not job:
+                continue
+            need_cancel_dl = job.download_status in ("queued", "downloading")
+            need_cancel_cv = job.download_status == "done" and job.convert_status in (
+                "queued",
+                "waiting",
+                "converting",
+            )
+            self._job_order = [j for j in self._job_order if j != job_id]
+            self._jobs.pop(job_id, None)
+            self._store.delete(job_id)
+            if need_cancel_dl:
+                self._dl.cancel_download(job_id)
+            if need_cancel_cv:
+                self._cv.cancel_convert(job_id)
+        self._refresh_downloads_table()
+        self._refresh_convert_table()
 
     @staticmethod
     def _set_table_text(table: QTableWidget, row: int, col: int, text: str) -> None:
@@ -857,14 +1128,18 @@ class MainWindow(QWidget):
         rows = [self._jobs[j] for j in self._job_order if self._jobs[j].download_status != "done"]
         self.downloads_table.setRowCount(len(rows))
         for i, job in enumerate(rows):
+            chk = QTableWidgetItem()
+            chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            chk.setCheckState(Qt.CheckState.Unchecked)
+            self.downloads_table.setItem(i, 0, chk)
             title_it = QTableWidgetItem(job.candidate.title)
             title_it.setData(Qt.ItemDataRole.UserRole, job.job_id)
-            self.downloads_table.setItem(i, 0, title_it)
+            self.downloads_table.setItem(i, 1, title_it)
             d1, d2, d3 = self._downloads_status_progress_speed(job)
-            self.downloads_table.setItem(i, 1, QTableWidgetItem(d1))
-            self.downloads_table.setItem(i, 2, QTableWidgetItem(d2))
-            self.downloads_table.setItem(i, 3, QTableWidgetItem(d3))
-            self.downloads_table.setCellWidget(i, 4, self._download_actions_widget(job))
+            self.downloads_table.setItem(i, 2, QTableWidgetItem(d1))
+            self.downloads_table.setItem(i, 3, QTableWidgetItem(d2))
+            self.downloads_table.setItem(i, 4, QTableWidgetItem(d3))
+            self.downloads_table.setCellWidget(i, 5, self._download_actions_widget(job))
 
     def _download_actions_widget(self, job: UiJob) -> QWidget:
         w = QWidget()
@@ -900,13 +1175,17 @@ class MainWindow(QWidget):
         ]
         self.convert_table.setRowCount(len(rows))
         for i, job in enumerate(rows):
+            chk = QTableWidgetItem()
+            chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            chk.setCheckState(Qt.CheckState.Unchecked)
+            self.convert_table.setItem(i, 0, chk)
             title_it = QTableWidgetItem(job.candidate.title)
             title_it.setData(Qt.ItemDataRole.UserRole, job.job_id)
-            self.convert_table.setItem(i, 0, title_it)
+            self.convert_table.setItem(i, 1, title_it)
             d1, d2 = self._convert_status_progress(job)
-            self.convert_table.setItem(i, 1, QTableWidgetItem(d1))
-            self.convert_table.setItem(i, 2, QTableWidgetItem(d2))
-            self.convert_table.setCellWidget(i, 3, self._convert_actions_widget(job))
+            self.convert_table.setItem(i, 2, QTableWidgetItem(d1))
+            self.convert_table.setItem(i, 3, QTableWidgetItem(d2))
+            self.convert_table.setCellWidget(i, 4, self._convert_actions_widget(job))
 
     def _update_downloads_row_cells(self, job: UiJob) -> None:
         row = self._row_index_for_job_id(self.downloads_table, job.job_id)
@@ -914,9 +1193,9 @@ class MainWindow(QWidget):
             self._refresh_downloads_table()
             return
         d1, d2, d3 = self._downloads_status_progress_speed(job)
-        self._set_table_text(self.downloads_table, row, 1, d1)
-        self._set_table_text(self.downloads_table, row, 2, d2)
-        self._set_table_text(self.downloads_table, row, 3, d3)
+        self._set_table_text(self.downloads_table, row, 2, d1)
+        self._set_table_text(self.downloads_table, row, 3, d2)
+        self._set_table_text(self.downloads_table, row, 4, d3)
 
     def _update_convert_row_cells(self, job: UiJob) -> None:
         row = self._row_index_for_job_id(self.convert_table, job.job_id)
@@ -924,8 +1203,8 @@ class MainWindow(QWidget):
             self._refresh_convert_table()
             return
         d1, d2 = self._convert_status_progress(job)
-        self._set_table_text(self.convert_table, row, 1, d1)
-        self._set_table_text(self.convert_table, row, 2, d2)
+        self._set_table_text(self.convert_table, row, 2, d1)
+        self._set_table_text(self.convert_table, row, 3, d2)
 
     def _convert_actions_widget(self, job: UiJob) -> QWidget:
         w = QWidget()
@@ -977,21 +1256,7 @@ class MainWindow(QWidget):
             != QMessageBox.StandardButton.Yes
         ):
             return
-        need_cancel_dl = job.download_status in ("queued", "downloading")
-        need_cancel_cv = job.download_status == "done" and job.convert_status in (
-            "queued",
-            "waiting",
-            "converting",
-        )
-        self._job_order = [j for j in self._job_order if j != job_id]
-        self._jobs.pop(job_id, None)
-        self._store.delete(job_id)
-        if need_cancel_dl:
-            self._dl.cancel_download(job_id)
-        if need_cancel_cv:
-            self._cv.cancel_convert(job_id)
-        self._refresh_downloads_table()
-        self._refresh_convert_table()
+        self._purge_jobs_from_queue([job_id])
 
     def _restart_download_for_job(self, job_id: str) -> None:
         job = self._jobs.get(job_id)

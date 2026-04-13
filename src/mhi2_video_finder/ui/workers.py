@@ -13,6 +13,7 @@ from yt_dlp.utils import DownloadCancelled
 
 from mhi2_video_finder.config import Settings
 from mhi2_video_finder.download import download_to_cache
+from mhi2_video_finder.search import VideoCandidate
 from mhi2_video_finder.exceptions import OperationCancelled
 from mhi2_video_finder.transcode import transcode
 
@@ -105,6 +106,34 @@ class SearchWorker(QThread):
             if self.isInterruptionRequested():
                 return
             self.failed.emit(str(e))
+
+
+class BulkUrlResolveWorker(QThread):
+    """Resolve many watch URLs to VideoCandidate in the background (yt-dlp per URL)."""
+
+    finished_ok = pyqtSignal(list, list)  # list[VideoCandidate], list[tuple[str, str]] url, err
+
+    def __init__(self, urls: list[str], settings: Settings, parent=None) -> None:
+        super().__init__(parent)
+        self._urls = urls
+        self._settings = settings
+
+    def run(self) -> None:
+        from mhi2_video_finder.search import video_from_url
+
+        mf = self._settings.match_filter
+        ok: list[VideoCandidate] = []
+        failures: list[tuple[str, str]] = []
+        for u in self._urls:
+            if self.isInterruptionRequested():
+                return
+            try:
+                ok.append(video_from_url(u, match_filter=mf))
+            except Exception as e:
+                failures.append((u, str(e)))
+        if self.isInterruptionRequested():
+            return
+        self.finished_ok.emit(ok, failures)
 
 
 class DownloadService(QObject):
