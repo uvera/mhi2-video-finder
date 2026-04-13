@@ -4,20 +4,34 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-COMPOSE="${COMPOSE:-podman-compose}"
-if ! command -v "$COMPOSE" >/dev/null 2>&1; then
-  echo "Set COMPOSE=podman-compose or COMPOSE='docker compose' (command not found: $COMPOSE)" >&2
+# Rootful Podman: use sudo (set USE_SUDO=0 for rootless podman-compose).
+USE_SUDO="${USE_SUDO:-1}"
+
+compose() {
+  if [[ "$USE_SUDO" == "1" ]]; then
+    sudo podman-compose "$@"
+  else
+    podman-compose "$@"
+  fi
+}
+
+if ! command -v podman-compose >/dev/null 2>&1; then
+  echo "podman-compose not found on PATH" >&2
+  exit 1
+fi
+if [[ "$USE_SUDO" == "1" ]] && ! command -v sudo >/dev/null 2>&1; then
+  echo "sudo not found; set USE_SUDO=0 for rootless podman" >&2
   exit 1
 fi
 
-echo "==> $COMPOSE down"
-$COMPOSE down
+echo "==> compose down (USE_SUDO=$USE_SUDO)"
+compose down
 
-echo "==> $COMPOSE build --no-cache"
-$COMPOSE build --no-cache
+echo "==> compose build --no-cache"
+compose build --no-cache
 
-echo "==> $COMPOSE up -d"
-$COMPOSE up -d
+echo "==> compose up -d"
+compose up -d
 
 PORT=8765
 if [[ -f .env ]]; then

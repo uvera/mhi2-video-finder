@@ -12,12 +12,14 @@ From **`deploy/podman/`** after `git pull`:
 ./rebuild-daemon.sh
 ```
 
+The script runs **`sudo podman-compose`** by default (rootful Podman). For rootless: `USE_SUDO=0 ./rebuild-daemon.sh`.
+
 Or manually:
 
 ```bash
-podman-compose down
-podman-compose build --no-cache
-podman-compose up -d
+sudo podman-compose down
+sudo podman-compose build --no-cache
+sudo podman-compose up -d
 curl -sS http://127.0.0.1:8765/healthz   # expect "app_version" in JSON
 ```
 

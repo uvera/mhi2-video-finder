@@ -4,7 +4,8 @@
 #   cp -n .env.example .env                   # set DAEMON_BEARER_TOKEN here
 #
 # After git pull, use ./rebuild-daemon.sh so the image actually rebuilds (up --build often skips).
-# Quick start without script: podman-compose build --no-cache && podman-compose up -d
+# That script uses: sudo podman-compose (set USE_SUDO=0 for rootless).
+# Quick start without script: sudo podman-compose build --no-cache && sudo podman-compose up -d
 #
 #   podman compose up -d --build              # or: podman-compose up -d --build (older Podman)
 #
