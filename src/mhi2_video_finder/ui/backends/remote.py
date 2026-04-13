@@ -6,6 +6,7 @@ import json
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
@@ -102,6 +103,9 @@ class RemoteJobController(QObject):
     recent_jobs_ready = pyqtSignal(list)
     # Short status text for the main window (emitted from worker threads; Qt queues to GUI thread).
     user_status = pyqtSignal(str)
+    # title/channel/video_id from REST or WebSocket when daemon fills them (e.g. after yt-dlp).
+    # Empty string for a field means "leave existing UI value unchanged".
+    remote_meta_updated = pyqtSignal(str, str, str, str)
 
     def __init__(self, get_settings: Callable[[], Settings]) -> None:
         super().__init__()
@@ -118,6 +122,10 @@ class RemoteJobController(QObject):
         self._ws_app: websocket.WebSocketApp | None = None
         self._need_ws_restart = threading.Event()
         self._stopped_once = threading.Event()
+        # Bound status-sync concurrency to avoid startup thread storms when many
+        # remote jobs are restored/imported at once.
+        self._sync_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="vf-remote-sync")
+        self._sync_inflight: set[tuple[str, str]] = set()
 
     def register_existing(self, local_id: str, remote_id: str) -> None:
         with self._lock:
@@ -199,6 +207,10 @@ class RemoteJobController(QObject):
                 app.close()
             except Exception:
                 pass
+        try:
+            self._sync_pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
 
     def start_ws(self) -> None:
         if self._ws_thread and self._ws_thread.is_alive():
@@ -208,7 +220,20 @@ class RemoteJobController(QObject):
         self._ws_thread.start()
 
     def sync_job_from_server(self, local_id: str, remote_id: str) -> None:
-        threading.Thread(target=self._get_status_and_reconcile, args=(local_id, remote_id), daemon=True).start()
+        if self._stop.is_set():
+            return
+        key = (local_id, remote_id)
+        with self._lock:
+            if key in self._sync_inflight:
+                return
+            self._sync_inflight.add(key)
+        fut = self._sync_pool.submit(self._get_status_and_reconcile, local_id, remote_id)
+
+        def _done(_f: object) -> None:
+            with self._lock:
+                self._sync_inflight.discard(key)
+
+        fut.add_done_callback(_done)
 
     def fetch_recent_jobs_async(self, limit: int = 200) -> None:
         """Fetch ``GET /v1/jobs`` in a worker thread; emit ``recent_jobs_ready`` on the GUI thread."""
@@ -442,6 +467,15 @@ class RemoteJobController(QObject):
         self._dl_done_sent.discard(local_id)
         self.remote_missing.emit(local_id, f"Remote job {remote_id} is missing. {detail}")
 
+    def _emit_remote_meta_from_row(self, local_id: str, row: dict[str, Any]) -> None:
+        t = str(row.get("title") or "").strip()
+        ch = str(row.get("channel") or "").strip()
+        v = str(row.get("video_id") or "").strip()
+        if len(v) != 11:
+            v = ""
+        if t or ch or v:
+            self.remote_meta_updated.emit(local_id, t, ch, v)
+
     def _apply_status_snapshot(self, local_id: str, row: dict[str, Any]) -> None:
         st = row.get("status")
         phase = row.get("phase")
@@ -472,6 +506,7 @@ class RemoteJobController(QObject):
                 self.cv.convert_cancelled.emit(local_id)
             else:
                 self.dl.download_cancelled.emit(local_id)
+        self._emit_remote_meta_from_row(local_id, row)
 
     def _emit_dl_done_bridge(self, local_id: str) -> None:
         if local_id in self._dl_done_sent:
@@ -550,6 +585,8 @@ class RemoteJobController(QObject):
                     {"local_id": lid, "remote_id": rid, "status": st, "phase": ph},
                 )
                 # endregion
+            if any(k in o for k in ("title", "channel", "video_id")):
+                self._emit_remote_meta_from_row(lid, o)
             if st == "converting" or (st == "downloading" and ph == "convert"):
                 self._emit_dl_done_bridge(lid)
         elif mtype == "job_progress":

@@ -306,17 +306,22 @@ class JobEngine:
             speed="",
             eta="",
         )
-        self.emit(
-            job_id,
-            {
-                "type": "job_state_changed",
-                "job_id": job_id,
-                "status": JobStatus.DOWNLOADING.value,
-                "phase": JobPhase.CONVERT.value,
-            },
-        )
-        # Refresh video_id / title / channel if client omitted them
+        # Refresh video_id / title / channel before notifying clients so GET /v1/jobs and
+        # WebSocket payloads see metadata (e.g. Telegram-created jobs with empty title).
         self._store.update_meta(job_id, video_id=vid, title=title, channel=ch)
+        state_msg: dict[str, Any] = {
+            "type": "job_state_changed",
+            "job_id": job_id,
+            "status": JobStatus.DOWNLOADING.value,
+            "phase": JobPhase.CONVERT.value,
+        }
+        if title:
+            state_msg["title"] = title
+        if ch:
+            state_msg["channel"] = ch
+        if vid:
+            state_msg["video_id"] = vid
+        self.emit(job_id, state_msg)
         self._convert_executor.submit(self._run_convert_stage, job_id)
         # region agent log
         _debug_log(

@@ -80,11 +80,15 @@ class JobStore:
         self._conn.commit()
 
     def upsert(self, job: UiJob, seq: int) -> None:
+        self._upsert_no_commit(job, seq)
+        self._conn.commit()
+
+    def _upsert_no_commit(self, job: UiJob, seq: int) -> None:
         if job.download_status == "done" and job.convert_status == "done":
             if job.backend == "remote" and not job.remote_saved_locally:
                 pass
             else:
-                self.delete(job.job_id)
+                self._conn.execute("DELETE FROM jobs WHERE job_id = ?", (job.job_id,))
                 return
         yjson: str | None
         if job.ytdlp_info is None:
@@ -147,6 +151,10 @@ class JobStore:
                 (job.remote_job_origin or "desktop").strip() or "desktop",
             ),
         )
+
+    def upsert_many(self, jobs_with_seq: list[tuple[UiJob, int]]) -> None:
+        for job, seq in jobs_with_seq:
+            self._upsert_no_commit(job, seq)
         self._conn.commit()
 
     def delete(self, job_id: str) -> None:

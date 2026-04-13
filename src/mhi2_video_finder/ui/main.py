@@ -25,6 +25,9 @@ def _configure_logging(verbose: bool) -> None:
         force=True,
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("httpcore.connection").setLevel(logging.WARNING)
+    logging.getLogger("httpcore.http11").setLevel(logging.WARNING)
 
 
 def main() -> None:

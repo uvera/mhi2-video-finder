@@ -96,6 +96,7 @@ class MainWindow(QWidget):
             self._remote.remote_registered.connect(self._on_remote_registered)
             self._remote.remote_missing.connect(self._on_remote_missing)
             self._remote.recent_jobs_ready.connect(self._on_remote_daemon_jobs_imported)
+            self._remote.remote_meta_updated.connect(self._on_remote_meta_updated)
             self._dl = self._remote.dl
             self._cv = self._remote.cv
             self._remote.start_ws()
@@ -144,6 +145,8 @@ class MainWindow(QWidget):
             self._settings.merged_remote_download_dir() / _REMOTE_DAEMON_IMPORT_SUBDIR
         )
         added = 0
+        to_persist: list[tuple[UiJob, int]] = []
+        to_sync: list[tuple[str, str]] = []
         # Server returns newest-first; append oldest first so recent imports land at the bottom.
         for row in reversed(rows):
             if not isinstance(row, dict):
@@ -190,15 +193,110 @@ class MainWindow(QWidget):
             )
             self._jobs[jid] = job
             self._job_order.append(jid)
-            self._persist_job(job)
+            self._apply_remote_status_snapshot(job, row)
+            to_persist.append((job, len(self._job_order) - 1))
             self._remote.register_existing(jid, rid)
-            self._remote.sync_job_from_server(jid, rid)
+            if self._needs_remote_status_sync(row):
+                to_sync.append((jid, rid))
             added += 1
 
         if added:
+            self._store.upsert_many(to_persist)
+            for local_id, remote_id in to_sync:
+                self._remote.sync_job_from_server(local_id, remote_id)
             self._refresh_downloads_table()
             self._refresh_convert_table()
             self._status.setText(f"Imported {added} job(s) from remote daemon.")
+
+    @staticmethod
+    def _needs_remote_status_sync(row: dict[str, object]) -> bool:
+        st = str(row.get("status") or "").strip().lower()
+        return st not in ("done", "failed", "cancelled")
+
+    @staticmethod
+    def _needs_remote_status_sync_for_job(job: UiJob) -> bool:
+        if job.download_status in ("queued", "downloading"):
+            return True
+        if job.download_status == "done" and job.convert_status in ("queued", "waiting", "converting"):
+            return True
+        return False
+
+    @staticmethod
+    def _apply_remote_status_snapshot(job: UiJob, row: dict[str, object]) -> None:
+        st = str(row.get("status") or "").strip().lower()
+        phase = str(row.get("phase") or "").strip().lower()
+        err = str(row.get("error") or "").strip()
+        err_phase = str(row.get("error_phase") or "").strip().lower()
+
+        if st in ("queued", "downloading"):
+            job.download_status = "downloading" if st == "downloading" else "queued"
+            pct = row.get("download_percent")
+            if isinstance(pct, (int, float)):
+                job.download_percent = float(pct)
+            else:
+                job.download_percent = -1.0
+            job.download_speed = str(row.get("speed") or "")
+            job.download_eta = str(row.get("eta") or "")
+            if phase == "convert":
+                job.download_status = "done"
+                job.download_percent = 100.0
+                job.convert_status = "converting"
+                cp = row.get("convert_percent")
+                if isinstance(cp, (int, float)):
+                    job.convert_percent = float(cp)
+                    job.convert_indeterminate = False
+                else:
+                    job.convert_percent = 0.0
+                    job.convert_indeterminate = True
+            return
+
+        if st == "converting":
+            job.download_status = "done"
+            job.download_percent = 100.0
+            job.convert_status = "converting"
+            cp = row.get("convert_percent")
+            if isinstance(cp, (int, float)):
+                job.convert_percent = float(cp)
+                job.convert_indeterminate = False
+            else:
+                job.convert_percent = 0.0
+                job.convert_indeterminate = True
+            return
+
+        if st == "done":
+            job.download_status = "done"
+            job.download_percent = 100.0
+            job.convert_status = "done"
+            job.convert_percent = 100.0
+            job.convert_indeterminate = False
+            return
+
+        if st == "failed":
+            if err_phase == "convert":
+                job.download_status = "done"
+                job.download_percent = 100.0
+                job.convert_status = "failed"
+                job.convert_error = err or "failed"
+            else:
+                job.download_status = "failed"
+                job.download_error = err or "failed"
+                job.convert_status = "waiting"
+                job.convert_percent = 0.0
+                job.convert_indeterminate = False
+            return
+
+        if st == "cancelled":
+            if phase == "convert":
+                job.download_status = "done"
+                job.download_percent = 100.0
+                job.convert_status = "cancelled"
+                job.convert_percent = 0.0
+                job.convert_indeterminate = False
+            else:
+                job.download_status = "cancelled"
+                job.download_percent = -1.0
+                job.download_speed = ""
+                job.download_eta = ""
 
     def _persist_job(self, job: UiJob) -> None:
         try:
@@ -264,7 +362,11 @@ class MainWindow(QWidget):
                     continue
                 if remote_state_normalized:
                     self._persist_job(job)
-                if self._remote and job.remote_job_id:
+                if (
+                    self._remote
+                    and job.remote_job_id
+                    and self._needs_remote_status_sync_for_job(job)
+                ):
                     self._remote.register_existing(jid, job.remote_job_id)
                     self._remote.sync_job_from_server(jid, job.remote_job_id)
                 continue
@@ -1541,6 +1643,30 @@ class MainWindow(QWidget):
         if job:
             job.remote_job_id = remote_id
             self._persist_job(job)
+
+    def _on_remote_meta_updated(self, local_id: str, title: str, channel: str, video_id: str) -> None:
+        job = self._jobs.get(local_id)
+        if not job:
+            return
+        changed = False
+        if title and job.candidate.title != title:
+            job.candidate.title = title
+            changed = True
+        if channel and job.candidate.channel != channel:
+            job.candidate.channel = channel
+            changed = True
+        if len(video_id) == 11 and job.candidate.video_id != video_id:
+            job.candidate.video_id = video_id
+            job.candidate.url = f"https://www.youtube.com/watch?v={video_id}"
+            changed = True
+        if not changed:
+            return
+        self._persist_job(job)
+        new_title = job.candidate.title
+        for table in (self.downloads_table, self.convert_table):
+            row = self._row_index_for_job_id(table, local_id)
+            if row >= 0:
+                self._set_table_text(table, row, 1, new_title)
 
     def _on_remote_connection_error(self, msg: str) -> None:
         self._status.setText(f"Remote: {msg}")
