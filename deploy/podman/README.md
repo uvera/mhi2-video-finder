@@ -18,7 +18,7 @@ The script runs **`sudo podman-compose`** by default (rootful Podman). For rootl
 
 If healthz still has no `app_version`, the script prints **Diagnostics** (host vs in-container checks via **Python** inside the slim image, `podman inspect` **Config.Cmd**, `podman ps`). Use that output to see whether the image was built from the wrong `Containerfile` (CMD stuck on `mhi2-video-finder-daemon` instead of `python -m …`).
 
-**Compose gotcha (fixed in-tree):** `dockerfile: Containerfile` with `context: ../..` is resolved incorrectly by some **podman-compose** versions, producing a **stale image**. This repo uses **`dockerfile: ../../Containerfile`** (path relative to the compose file). If you overrode `dockerfile` locally, fix it to match [compose.yaml](compose.yaml).
+**podman-compose 1.0.x:** `compose build` only checks for **`Dockerfile`** inside `context` (see `OSError: Dockerfile not found in ../..`). The repo root **`Dockerfile`** is a **symlink to `Containerfile`**. Do not delete it if you use `podman-compose`; modern `docker compose` / Podman 5 still work the same.
 
 To force dropping the old tagged image before build: `PRUNE_IMAGE=1 ./rebuild-daemon.sh`.
 

@@ -74,6 +74,10 @@ if [[ ! -f "$ROOT/Containerfile" ]]; then
   echo "ERROR: missing $ROOT/Containerfile" >&2
   exit 1
 fi
+if [[ ! -e "$ROOT/Dockerfile" ]]; then
+  echo "ERROR: missing $ROOT/Dockerfile (symlink to Containerfile — required for podman-compose 1.0.x)" >&2
+  exit 1
+fi
 if ! grep -q "mhi2_video_finder.daemon.main" "$ROOT/Containerfile"; then
   echo "ERROR: $ROOT/Containerfile does not CMD python -m mhi2_video_finder.daemon.main (git pull?)" >&2
   exit 1

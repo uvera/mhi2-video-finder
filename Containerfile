@@ -1,4 +1,5 @@
 # Podman / Docker image for mhi2-video-finder-daemon
+# Root `Dockerfile` is a symlink to this file (podman-compose 1.0.x requires "Dockerfile" in build context).
 FROM docker.io/library/python:3.12-slim-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
