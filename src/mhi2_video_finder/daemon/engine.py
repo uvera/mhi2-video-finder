@@ -112,6 +112,37 @@ class JobEngine:
         self._abort_for(job_id).set()
         return True
 
+    def _safe_unlink_job_path(self, path_str: str | None) -> None:
+        if not path_str:
+            return
+        p = Path(path_str).expanduser().resolve()
+        out_base = self._settings.merged_output_dir().resolve()
+        cache_base = self._settings.merged_raw_cache_dir().resolve()
+        for base in (out_base, cache_base):
+            try:
+                p.relative_to(base)
+            except ValueError:
+                continue
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return
+
+    def delete_job(self, job_id: str) -> bool:
+        """Remove job from the store; abort if still active. Best-effort cache/output cleanup."""
+        row = self._store.get(job_id)
+        if not row:
+            return False
+        if row.status not in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
+            self._abort_for(job_id).set()
+        self._safe_unlink_job_path(row.raw_path)
+        self._safe_unlink_job_path(row.output_path)
+        self._store.delete(job_id)
+        self._clear_abort_for(job_id)
+        self.emit(job_id, {"type": "job_deleted", "job_id": job_id})
+        return True
+
     def create_job(
         self,
         *,

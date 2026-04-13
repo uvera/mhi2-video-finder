@@ -1253,6 +1253,17 @@ class MainWindow(QWidget):
                 "waiting",
                 "converting",
             )
+            rid = (job.remote_job_id or "").strip()
+            if job.backend == "remote" and rid:
+                if self._remote is None:
+                    self._status.setText("Remote backend unavailable; cannot remove job from server.")
+                    continue
+                if not self._remote.delete_server_job_sync(rid):
+                    continue
+                self._remote.reset_local_tracking(job_id)
+                self._remote.clear_pending(job_id)
+                need_cancel_dl = False
+                need_cancel_cv = False
             self._job_order = [j for j in self._job_order if j != job_id]
             self._jobs.pop(job_id, None)
             self._store.delete(job_id)

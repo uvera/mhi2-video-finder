@@ -210,6 +210,16 @@ def cancel_job(job_id: str) -> dict[str, Any]:
     return {"job_id": job_id, "cancel_requested": ok, "status": row.status.value if row else "unknown"}
 
 
+@app.delete("/v1/jobs/{job_id}", dependencies=[Depends(require_bearer)])
+def delete_job(job_id: str) -> dict[str, Any]:
+    assert engine is not None
+    assert store is not None
+    if not store.get(job_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown job_id")
+    engine.delete_job(job_id)
+    return {"job_id": job_id, "deleted": True}
+
+
 @app.get("/v1/jobs/{job_id}/download", dependencies=[Depends(require_bearer)])
 def download_job(job_id: str):
     assert store is not None

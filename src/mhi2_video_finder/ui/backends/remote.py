@@ -195,6 +195,25 @@ class RemoteJobController(QObject):
             return
         threading.Thread(target=self._post_cancel, args=(local_id, rid), daemon=True).start()
 
+    def delete_server_job_sync(self, remote_id: str) -> bool:
+        """``DELETE /v1/jobs/{id}`` so the daemon drops the row (stops re-import after UI restart)."""
+        base = self._base()
+        if not base:
+            self.connection_error.emit("Remote: base URL not set; cannot delete job on server.")
+            return False
+        url = f"{base.rstrip('/')}/v1/jobs/{quote(remote_id, safe='')}"
+        try:
+            with httpx.Client(timeout=60.0) as c:
+                r = c.delete(url, headers=self._headers())
+            if r.status_code == 404:
+                return True
+            r.raise_for_status()
+            return True
+        except Exception as e:
+            _log.warning("DELETE %s failed: %s", url, e)
+            self.connection_error.emit(f"Remote delete failed: {e}")
+            return False
+
     def stop(self) -> None:
         if self._stopped_once.is_set():
             return

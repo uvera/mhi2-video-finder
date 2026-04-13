@@ -86,6 +86,24 @@ def test_create_job_mocked_engine(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
         assert data["status"] == "queued"
 
 
+def test_delete_job_endpoint(daemon_client: TestClient) -> None:
+    import mhi2_video_finder.daemon.app as app_mod
+    from mhi2_video_finder.daemon.models import DaemonJobRow, JobStatus
+
+    assert app_mod.store is not None
+    app_mod.store.insert(
+        DaemonJobRow(
+            job_id="del-me",
+            url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            status=JobStatus.CANCELLED,
+        )
+    )
+    r = daemon_client.delete("/v1/jobs/del-me")
+    assert r.status_code == 200
+    assert r.json().get("deleted") is True
+    assert daemon_client.get("/v1/jobs/del-me").status_code == 404
+
+
 def test_daemon_job_store_roundtrip(tmp_path: Path) -> None:
     from mhi2_video_finder.daemon.models import DaemonJobRow, JobStatus
     from mhi2_video_finder.daemon.store import DaemonJobStore
