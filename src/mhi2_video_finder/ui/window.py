@@ -37,7 +37,13 @@ from mhi2_video_finder import __version__
 from mhi2_video_finder.config import Settings, default_config_path, load_settings, save_settings
 from mhi2_video_finder.paste_urls import parse_pasted_video_urls
 from mhi2_video_finder.search import VideoCandidate
-from mhi2_video_finder.workflow import ensure_output_dir, safe_stem, slug_dir_name, unique_out_path
+from mhi2_video_finder.workflow import (
+    ensure_output_dir,
+    infer_subdir_name,
+    safe_stem,
+    slug_dir_name,
+    unique_out_path,
+)
 
 from .backends.remote import RemoteJobController
 from .job_store import JobStore
@@ -53,6 +59,11 @@ from .workers import BulkUrlResolveWorker, ConvertService, DownloadService, Sear
 
 # Remote-download target subfolder for jobs imported from the daemon (Telegram / API), not from this UI queue.
 _REMOTE_DAEMON_IMPORT_SUBDIR = "daemon-imports"
+
+
+def _display_title_for_remote_row(raw_title: str) -> str:
+    t = raw_title.strip()
+    return t if t else "(no title)"
 
 
 class _RemoteFetchBridge(QObject):
@@ -136,14 +147,47 @@ class MainWindow(QWidget):
         if self._remote is not None:
             self._remote.fetch_recent_jobs_async(200)
 
+    def _remote_sync_import_root(self) -> Path:
+        return ensure_output_dir(
+            self._settings.merged_remote_download_dir() / _REMOTE_DAEMON_IMPORT_SUBDIR
+        )
+
+    def _remote_sync_out_folder_for_channel(self, channel: str) -> Path:
+        """Subfolder under daemon-imports from uploader/channel (same idea as CLI --infer-subdir)."""
+        root = self._remote_sync_import_root()
+        sub = infer_subdir_name(artist=None, channel=channel or None, fallback="")
+        if sub:
+            return ensure_output_dir(root / sub)
+        return root
+
+    def _stem_for_remote_sync_job(self, job: UiJob) -> str:
+        raw = (job.candidate.title or "").strip()
+        if raw == "(no title)":
+            raw = ""
+        fb = job.candidate.video_id or (job.remote_job_id or "")[:12] or "video"
+        return safe_stem(raw, fb)
+
+    def _recompute_remote_sync_out_path_if_needed(self, job: UiJob) -> bool:
+        """Update local save path from title/channel metadata (Telegram-imported jobs only)."""
+        if job.backend != "remote" or job.remote_job_origin != "remote_sync":
+            return False
+        if job.remote_saved_locally:
+            return False
+        folder = self._remote_sync_out_folder_for_channel(job.candidate.channel)
+        stem = self._stem_for_remote_sync_job(job)
+        vid = job.candidate.video_id
+        name_key = vid if len(vid) == 11 else (job.remote_job_id or "video")
+        new_p = unique_out_path(folder, stem, name_key)
+        if new_p.resolve() != job.out_path.resolve():
+            job.out_path = new_p
+            return True
+        return False
+
     def _on_remote_daemon_jobs_imported(self, rows: object) -> None:
         """Materialize daemon-side jobs into local rows (no POST /v1/jobs)."""
         if not isinstance(rows, list) or not self._use_remote or self._remote is None:
             return
         existing_remote = {j.remote_job_id for j in self._jobs.values() if j.remote_job_id}
-        out_root = ensure_output_dir(
-            self._settings.merged_remote_download_dir() / _REMOTE_DAEMON_IMPORT_SUBDIR
-        )
         added = 0
         to_persist: list[tuple[UiJob, int]] = []
         to_sync: list[tuple[str, str]] = []
@@ -165,7 +209,8 @@ class MainWindow(QWidget):
             if len(vid) != 11:
                 vid = ""
             canon_url = f"https://www.youtube.com/watch?v={vid}" if len(vid) == 11 else url.strip()
-            title = str(row.get("title") or "").strip() or "(no title)"
+            raw_title = str(row.get("title") or "").strip()
+            title = _display_title_for_remote_row(raw_title)
             channel = str(row.get("channel") or "").strip()
             cand = VideoCandidate(
                 video_id=vid,
@@ -174,9 +219,10 @@ class MainWindow(QWidget):
                 channel=channel,
                 url=canon_url,
             )
-            stem = safe_stem(cand.title, cand.video_id or rid[:12])
+            out_folder = self._remote_sync_out_folder_for_channel(channel)
+            stem = safe_stem(raw_title, cand.video_id or rid[:12])
             name_key = cand.video_id if len(cand.video_id) == 11 else rid
-            outp = unique_out_path(out_root, stem, name_key)
+            outp = unique_out_path(out_folder, stem, name_key)
 
             jid = new_job_id()
             job = UiJob(
@@ -362,6 +408,9 @@ class MainWindow(QWidget):
                     continue
                 if remote_state_normalized:
                     self._persist_job(job)
+                if self._remote and job.remote_job_origin == "remote_sync" and not job.remote_saved_locally:
+                    if self._recompute_remote_sync_out_path_if_needed(job):
+                        self._persist_job(job)
                 if (
                     self._remote
                     and job.remote_job_id
@@ -1672,6 +1721,7 @@ class MainWindow(QWidget):
             changed = True
         if not changed:
             return
+        self._recompute_remote_sync_out_path_if_needed(job)
         self._persist_job(job)
         new_title = job.candidate.title
         for table in (self.downloads_table, self.convert_table):
