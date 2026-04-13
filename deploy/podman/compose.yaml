@@ -2,13 +2,14 @@
 # Run from this directory:
 #   cp -n config.toml.example config.toml   # edit paths/token as needed
 #   cp -n .env.example .env                   # set DAEMON_BEARER_TOKEN here
-#   podman compose up -d --build
+#   podman compose up -d --build              # or: podman-compose up -d --build (older Podman)
 #
 # .env is passed directly to the container via env_file.
 # This avoids Podman Compose interpolation quirks with token values.
 #
-# Logs: podman compose logs -f
-# Stop: podman compose down
+# Logs: podman logs -f mhi2-vf   (reliable; includes stderr / NDJSON banner)
+#       or podman-compose logs -f mhi2-vf
+# Stop: podman compose down  /  podman-compose down
 
 services:
   mhi2-vf:
