@@ -15,7 +15,17 @@ podman compose up -d --build
 - **`config.toml`** must exist before `up` (compose mounts it read-only). It sets `raw_cache_dir` and `output_dir` to the in-container paths used by the named volumes in [compose.yaml](compose.yaml).
 - **`.env`** holds `DAEMON_BEARER_TOKEN` (gitignored) and is loaded via `env_file` (no compose interpolation); use the same token in the GUI remote settings.
 - **`MHI2_VF_PORT`** in `.env` changes the published host port (default `8765`).
-- **Debug NDJSON logs** (daemon instrumentation via `emit_debug_log`) are written to **`debug/debug-runtime.log`** next to `compose.yaml` (bind-mounted into the container). Override with `MHI2_VF_DEBUG_LOG_PATH` in compose if you need a different path.
+- **Debug NDJSON logs** (daemon instrumentation via `emit_debug_log`) are written to **`debug/debug-runtime.log`** next to `compose.yaml` (bind-mounted into the container). The `debug/` folder is a normal directory on disk, not a Git repository (there is no `debug/.git`).
+- If the bind mount is not writable (permissions / SELinux), the daemon falls back to **`/tmp/mhi2-video-finder/debug-runtime.log`** inside the container and prints errors to **`podman compose logs`**. Check there if `debug/` stays empty.
+
+**If `debug/` is empty after jobs run**
+
+1. Rebuild so the image includes current code: `podman compose up -d --build`.
+2. Confirm the variable inside the container: `podman exec mhi2-vf env | grep MHI2_VF_DEBUG_LOG_PATH`
+3. Watch container stderr for `emit_debug_log: could not write`: `podman compose logs -f mhi2-vf`
+4. Optional: `podman exec mhi2-vf sh -c 'touch /var/lib/mhi2-video-finder/debug/.write-test && ls -la /var/lib/mhi2-video-finder/debug/'`
+
+Do not set `MHI2_VF_DEBUG_LOG_PATH` to an empty value in `.env` (it would override the compose default in some setups).
 
 ```bash
 podman compose logs -f
