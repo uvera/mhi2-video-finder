@@ -473,23 +473,33 @@ class JobEngine:
             finished_at=now,
             raw_path=None,
         )
-        self.emit(
-            job_id,
-            {
-                "type": "job_state_changed",
-                "job_id": job_id,
-                "status": JobStatus.DONE.value,
-                "phase": None,
-            },
-        )
-        self.emit(
-            job_id,
-            {
-                "type": "job_done",
-                "job_id": job_id,
-                "download_url": f"/v1/jobs/{job_id}/download",
-            },
-        )
+        done_row = self._store.get(job_id)
+        done_state: dict[str, Any] = {
+            "type": "job_state_changed",
+            "job_id": job_id,
+            "status": JobStatus.DONE.value,
+            "phase": None,
+        }
+        done_finish: dict[str, Any] = {
+            "type": "job_done",
+            "job_id": job_id,
+            "download_url": f"/v1/jobs/{job_id}/download",
+        }
+        # Repeat title/channel/video_id on terminal events so clients that missed the post-download
+        # WS (e.g. reconnect, subscribe race) still refresh UI / SQLite before showing complete.
+        if done_row:
+            if done_row.title:
+                done_state["title"] = done_row.title
+                done_finish["title"] = done_row.title
+            if done_row.channel:
+                done_state["channel"] = done_row.channel
+                done_finish["channel"] = done_row.channel
+            v = str(done_row.video_id or "").strip()
+            if len(v) == 11:
+                done_state["video_id"] = v
+                done_finish["video_id"] = v
+        self.emit(job_id, done_state)
+        self.emit(job_id, done_finish)
         self._clear_abort_for(job_id)
 
     def _finish_failed(self, job_id: str, phase: JobPhase, err: str) -> None:

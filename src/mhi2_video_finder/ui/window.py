@@ -162,8 +162,6 @@ class MainWindow(QWidget):
 
     def _stem_for_remote_sync_job(self, job: UiJob) -> str:
         raw = (job.candidate.title or "").strip()
-        if raw == "(no title)":
-            raw = ""
         fb = job.candidate.video_id or (job.remote_job_id or "")[:12] or "video"
         return safe_stem(raw, fb)
 

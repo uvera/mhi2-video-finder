@@ -624,6 +624,8 @@ class RemoteJobController(QObject):
                 self._emit_dl_done_bridge(lid)
                 self.cv.progress.emit(lid, None if indet or pct < 0.0 else pct)
         elif mtype == "job_done":
+            if any(k in o for k in ("title", "channel", "video_id")):
+                self._emit_remote_meta_from_row(lid, o)
             self._emit_dl_done_bridge(lid)
             self.cv.item_done.emit(lid)
         elif mtype == "job_failed":

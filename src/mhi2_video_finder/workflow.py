@@ -20,8 +20,26 @@ def fmt_duration(seconds: int | None) -> str:
     return f"{m:d}:{s:02d}"
 
 
+def _is_placeholder_title_for_stem(title: str) -> bool:
+    """True when ``title`` is empty or a known UI / yt-dlp missing-title sentinel.
+
+    ``safe_stem("(no title)", vid)`` would otherwise become ``_no title_`` on disk.
+    """
+    t = (title or "").strip()
+    if not t:
+        return True
+    cf = t.casefold()
+    if cf == "(no title)":
+        return True
+    # Slugged forms if an older build or hand-edited path fed the stem back in.
+    if cf in ("_no title_", "_no_title_"):
+        return True
+    return False
+
+
 def safe_stem(title: str, fallback: str) -> str:
-    s = "".join(c if c.isalnum() or c in " -_." else "_" for c in title)[:120]
+    base = "" if _is_placeholder_title_for_stem(title) else title
+    s = "".join(c if c.isalnum() or c in " -_." else "_" for c in base)[:120]
     s = s.strip() or fallback
     return s
 
