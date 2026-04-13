@@ -13,6 +13,7 @@ from typing import Any
 from yt_dlp.utils import DownloadCancelled
 
 from mhi2_video_finder.config import Settings
+from mhi2_video_finder.debug_runtime_log import emit_debug_log as _debug_log
 from mhi2_video_finder.download import download_to_cache
 from mhi2_video_finder.exceptions import OperationCancelled
 from mhi2_video_finder.transcode import transcode
@@ -53,8 +54,26 @@ class JobEngine:
         self._convert_executor = ThreadPoolExecutor(
             max_workers=cv_workers, thread_name_prefix="vf-daemon-cv"
         )
+        # region agent log
+        _debug_log(
+            "H3",
+            "daemon/engine.py:67",
+            "engine initialized",
+            {"download_workers": dl_workers, "convert_workers": cv_workers},
+        )
+        # endregion
         self._lock = threading.Lock()
         self._cancel_events: dict[str, threading.Event] = {}
+
+    @staticmethod
+    def _executor_queue_size(executor: ThreadPoolExecutor) -> int | None:
+        q = getattr(executor, "_work_queue", None)
+        if q is None:
+            return None
+        try:
+            return int(q.qsize())
+        except Exception:
+            return None
 
     def shutdown(self, *, wait: bool = True) -> None:
         with self._lock:
@@ -120,6 +139,19 @@ class JobEngine:
         )
         self._store.insert(row)
         self._download_executor.submit(self._run_download_stage, job_id)
+        # region agent log
+        _debug_log(
+            "H3",
+            "daemon/engine.py:141",
+            "job created and download submitted",
+            {
+                "job_id": job_id,
+                "status": row.status.value,
+                "download_queue_size": self._executor_queue_size(self._download_executor),
+                "convert_queue_size": self._executor_queue_size(self._convert_executor),
+            },
+        )
+        # endregion
         self.emit(
             job_id,
             {"type": "job_state_changed", "job_id": job_id, "status": "queued", "phase": None},
@@ -137,6 +169,19 @@ class JobEngine:
                 self._download_executor.submit(self._run_download_stage, row.job_id)
 
     def _run_download_stage(self, job_id: str) -> None:
+        # region agent log
+        _debug_log(
+            "H3",
+            "daemon/engine.py:164",
+            "download stage entered",
+            {
+                "job_id": job_id,
+                "thread": threading.current_thread().name,
+                "download_queue_size": self._executor_queue_size(self._download_executor),
+                "convert_queue_size": self._executor_queue_size(self._convert_executor),
+            },
+        )
+        # endregion
         row = self._store.get(job_id)
         if not row:
             return
@@ -273,8 +318,34 @@ class JobEngine:
         # Refresh video_id / title / channel if client omitted them
         self._store.update_meta(job_id, video_id=vid, title=title, channel=ch)
         self._convert_executor.submit(self._run_convert_stage, job_id)
+        # region agent log
+        _debug_log(
+            "H3",
+            "daemon/engine.py:306",
+            "download finished and convert submitted",
+            {
+                "job_id": job_id,
+                "raw_path": str(raw_path),
+                "download_queue_size": self._executor_queue_size(self._download_executor),
+                "convert_queue_size": self._executor_queue_size(self._convert_executor),
+            },
+        )
+        # endregion
 
     def _run_convert_stage(self, job_id: str) -> None:
+        # region agent log
+        _debug_log(
+            "H3",
+            "daemon/engine.py:318",
+            "convert stage entered",
+            {
+                "job_id": job_id,
+                "thread": threading.current_thread().name,
+                "download_queue_size": self._executor_queue_size(self._download_executor),
+                "convert_queue_size": self._executor_queue_size(self._convert_executor),
+            },
+        )
+        # endregion
         row = self._store.get(job_id)
         if not row:
             return

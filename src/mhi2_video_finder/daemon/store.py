@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from mhi2_video_finder.debug_runtime_log import emit_debug_log as _debug_log
 from mhi2_video_finder.daemon.models import DaemonJobRow, JobPhase, JobStatus
 
 
@@ -21,11 +22,15 @@ class DaemonJobStore:
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
 
+    def _log_db(self, hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
+        _debug_log(hypothesis_id, location, message, {"store_path": str(self.path), **data})
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
 
     def _init_schema(self) -> None:
+        started = time.monotonic()
         with self._lock:
             self._conn.execute(
                 """
@@ -84,48 +89,76 @@ class DaemonJobStore:
                 ),
             )
             self._conn.commit()
+        self._log_db(
+            "H9",
+            "daemon/store.py:87",
+            "sqlite schema initialized",
+            {"elapsed_ms": int((time.monotonic() - started) * 1000)},
+        )
 
     def insert(self, row: DaemonJobRow) -> None:
         now = time.time()
         if not row.created_at:
             row.created_at = now
         row.updated_at = now
+        started = time.monotonic()
         with self._lock:
-            self._conn.execute(
-                """
-                INSERT INTO daemon_jobs (
-                    job_id, url, subdir, output_stem, video_id, title, channel, no_embed,
-                    status, phase, download_percent, convert_percent, speed, eta,
-                    error, error_phase, raw_path, output_path, ytdlp_info_json,
-                    created_at, updated_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    row.job_id,
-                    row.url,
-                    row.subdir,
-                    row.output_stem,
-                    row.video_id,
-                    row.title,
-                    row.channel,
-                    1 if row.no_embed else 0,
-                    row.status.value,
-                    row.phase.value if row.phase else None,
-                    row.download_percent,
-                    row.convert_percent,
-                    row.speed,
-                    row.eta,
-                    row.error,
-                    row.error_phase.value if row.error_phase else None,
-                    row.raw_path,
-                    row.output_path,
-                    row.ytdlp_info_json,
-                    row.created_at,
-                    row.updated_at,
-                    row.finished_at,
-                ),
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO daemon_jobs (
+                        job_id, url, subdir, output_stem, video_id, title, channel, no_embed,
+                        status, phase, download_percent, convert_percent, speed, eta,
+                        error, error_phase, raw_path, output_path, ytdlp_info_json,
+                        created_at, updated_at, finished_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row.job_id,
+                        row.url,
+                        row.subdir,
+                        row.output_stem,
+                        row.video_id,
+                        row.title,
+                        row.channel,
+                        1 if row.no_embed else 0,
+                        row.status.value,
+                        row.phase.value if row.phase else None,
+                        row.download_percent,
+                        row.convert_percent,
+                        row.speed,
+                        row.eta,
+                        row.error,
+                        row.error_phase.value if row.error_phase else None,
+                        row.raw_path,
+                        row.output_path,
+                        row.ytdlp_info_json,
+                        row.created_at,
+                        row.updated_at,
+                        row.finished_at,
+                    ),
+                )
+                self._conn.commit()
+            except sqlite3.Error as e:
+                self._log_db(
+                    "H10",
+                    "daemon/store.py:146",
+                    "sqlite insert failed",
+                    {
+                        "job_id": row.job_id,
+                        "error": str(e),
+                        "in_transaction": bool(self._conn.in_transaction),
+                    },
+                )
+                raise
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        if elapsed_ms >= 25:
+            self._log_db(
+                "H9",
+                "daemon/store.py:161",
+                "sqlite insert slow",
+                {"job_id": row.job_id, "elapsed_ms": elapsed_ms},
             )
-            self._conn.commit()
 
     def update(
         self,
@@ -148,70 +181,99 @@ class DaemonJobStore:
         clear_finished: bool = False,
     ) -> None:
         job_id_s = str(job_id)
+        started = time.monotonic()
         with self._lock:
-            cur = self._conn.execute("SELECT * FROM daemon_jobs WHERE job_id = ?", (job_id_s,))
-            base = cur.fetchone()
-            if not base:
-                return
-            d = dict(base)
-            if status is not None:
-                d["status"] = status.value
-            if clear_phase:
-                d["phase"] = None
-            elif phase is not None:
-                d["phase"] = phase.value
-            if download_percent is not None:
-                d["download_percent"] = download_percent
-            if convert_percent is not None:
-                d["convert_percent"] = convert_percent
-            if speed is not None:
-                d["speed"] = speed
-            if eta is not None:
-                d["eta"] = eta
-            if error is not None:
-                d["error"] = error
-            if clear_error_phase:
-                d["error_phase"] = None
-            elif error_phase is not None:
-                d["error_phase"] = error_phase.value
-            if raw_path is not None:
-                d["raw_path"] = raw_path
-            if output_path is not None:
-                d["output_path"] = output_path
-            if ytdlp_info_json is not None:
-                d["ytdlp_info_json"] = ytdlp_info_json
-            if finished_at is not None:
-                d["finished_at"] = finished_at
-            if clear_finished:
-                d["finished_at"] = None
-            d["updated_at"] = time.time()
-            self._conn.execute(
-                """
-                UPDATE daemon_jobs SET
-                    status = ?, phase = ?, download_percent = ?, convert_percent = ?,
-                    speed = ?, eta = ?, error = ?, error_phase = ?,
-                    raw_path = ?, output_path = ?, ytdlp_info_json = ?,
-                    updated_at = ?, finished_at = ?
-                WHERE job_id = ?
-                """,
-                (
-                    d["status"],
-                    d["phase"],
-                    d["download_percent"],
-                    d["convert_percent"],
-                    d["speed"],
-                    d["eta"],
-                    d["error"],
-                    d["error_phase"],
-                    d["raw_path"],
-                    d["output_path"],
-                    d["ytdlp_info_json"],
-                    d["updated_at"],
-                    d["finished_at"],
-                    job_id_s,
-                ),
+            try:
+                cur = self._conn.execute("SELECT * FROM daemon_jobs WHERE job_id = ?", (job_id_s,))
+                base = cur.fetchone()
+                if not base:
+                    return
+                d = dict(base)
+                if status is not None:
+                    d["status"] = status.value
+                if clear_phase:
+                    d["phase"] = None
+                elif phase is not None:
+                    d["phase"] = phase.value
+                if download_percent is not None:
+                    d["download_percent"] = download_percent
+                if convert_percent is not None:
+                    d["convert_percent"] = convert_percent
+                if speed is not None:
+                    d["speed"] = speed
+                if eta is not None:
+                    d["eta"] = eta
+                if error is not None:
+                    d["error"] = error
+                if clear_error_phase:
+                    d["error_phase"] = None
+                elif error_phase is not None:
+                    d["error_phase"] = error_phase.value
+                if raw_path is not None:
+                    d["raw_path"] = raw_path
+                if output_path is not None:
+                    d["output_path"] = output_path
+                if ytdlp_info_json is not None:
+                    d["ytdlp_info_json"] = ytdlp_info_json
+                if finished_at is not None:
+                    d["finished_at"] = finished_at
+                if clear_finished:
+                    d["finished_at"] = None
+                d["updated_at"] = time.time()
+                self._conn.execute(
+                    """
+                    UPDATE daemon_jobs SET
+                        status = ?, phase = ?, download_percent = ?, convert_percent = ?,
+                        speed = ?, eta = ?, error = ?, error_phase = ?,
+                        raw_path = ?, output_path = ?, ytdlp_info_json = ?,
+                        updated_at = ?, finished_at = ?
+                    WHERE job_id = ?
+                    """,
+                    (
+                        d["status"],
+                        d["phase"],
+                        d["download_percent"],
+                        d["convert_percent"],
+                        d["speed"],
+                        d["eta"],
+                        d["error"],
+                        d["error_phase"],
+                        d["raw_path"],
+                        d["output_path"],
+                        d["ytdlp_info_json"],
+                        d["updated_at"],
+                        d["finished_at"],
+                        job_id_s,
+                    ),
+                )
+                self._conn.commit()
+            except sqlite3.Error as e:
+                self._log_db(
+                    "H10",
+                    "daemon/store.py:259",
+                    "sqlite update failed",
+                    {
+                        "job_id": job_id_s,
+                        "error": str(e),
+                        "in_transaction": bool(self._conn.in_transaction),
+                        "status": status.value if status is not None else None,
+                        "phase": phase.value if phase is not None else None,
+                    },
+                )
+                raise
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        if elapsed_ms >= 40 or status is not None or phase is not None:
+            self._log_db(
+                "H9",
+                "daemon/store.py:277",
+                "sqlite update committed",
+                {
+                    "job_id": job_id_s,
+                    "elapsed_ms": elapsed_ms,
+                    "status": status.value if status is not None else None,
+                    "phase": phase.value if phase is not None else None,
+                },
             )
-            self._conn.commit()
 
     def get(self, job_id: str) -> DaemonJobRow | None:
         job_id_s = str(job_id)
@@ -243,9 +305,27 @@ class DaemonJobStore:
 
     def delete(self, job_id: str) -> None:
         job_id_s = str(job_id)
+        started = time.monotonic()
         with self._lock:
-            self._conn.execute("DELETE FROM daemon_jobs WHERE job_id = ?", (job_id_s,))
-            self._conn.commit()
+            try:
+                self._conn.execute("DELETE FROM daemon_jobs WHERE job_id = ?", (job_id_s,))
+                self._conn.commit()
+            except sqlite3.Error as e:
+                self._log_db(
+                    "H10",
+                    "daemon/store.py:314",
+                    "sqlite delete failed",
+                    {"job_id": job_id_s, "error": str(e), "in_transaction": bool(self._conn.in_transaction)},
+                )
+                raise
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        if elapsed_ms >= 25:
+            self._log_db(
+                "H9",
+                "daemon/store.py:325",
+                "sqlite delete slow",
+                {"job_id": job_id_s, "elapsed_ms": elapsed_ms},
+            )
 
     def update_meta(
         self,
@@ -270,12 +350,30 @@ class DaemonJobStore:
             return
         vals.append(time.time())
         vals.append(str(job_id))
+        started = time.monotonic()
         with self._lock:
-            self._conn.execute(
-                f"UPDATE daemon_jobs SET {', '.join(parts)}, updated_at = ? WHERE job_id = ?",
-                vals,
+            try:
+                self._conn.execute(
+                    f"UPDATE daemon_jobs SET {', '.join(parts)}, updated_at = ? WHERE job_id = ?",
+                    vals,
+                )
+                self._conn.commit()
+            except sqlite3.Error as e:
+                self._log_db(
+                    "H10",
+                    "daemon/store.py:358",
+                    "sqlite update_meta failed",
+                    {"job_id": str(job_id), "error": str(e), "in_transaction": bool(self._conn.in_transaction)},
+                )
+                raise
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        if elapsed_ms >= 25:
+            self._log_db(
+                "H9",
+                "daemon/store.py:369",
+                "sqlite update_meta slow",
+                {"job_id": str(job_id), "elapsed_ms": elapsed_ms},
             )
-            self._conn.commit()
 
     def _row_from_sql(self, row: sqlite3.Row) -> DaemonJobRow:
         d = dict(row)
