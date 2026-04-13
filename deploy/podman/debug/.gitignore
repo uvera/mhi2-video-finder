@@ -1,0 +1,2 @@
+# Host-visible NDJSON logs from the daemon (see compose.yaml)
+*.log

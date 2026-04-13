@@ -26,9 +26,12 @@ services:
       DAEMON_PORT: "8765"
       DAEMON_STATE_DIR: /var/lib/mhi2-video-finder/state
       MHI2_VIDEO_FINDER_CONFIG: /config/config.toml
+      # NDJSON runtime diagnostics (emit_debug_log); file is on the host under ./debug/
+      MHI2_VF_DEBUG_LOG_PATH: /var/lib/mhi2-video-finder/debug/debug-runtime.log
     volumes:
       - ./config.toml:/config/config.toml:ro,Z
       - mhi2-vf-state:/var/lib/mhi2-video-finder/state:Z
+      - ./debug:/var/lib/mhi2-video-finder/debug:Z
       - mhi2-vf-raw:/root/.cache/mhi2-video-finder/raw:Z
       - mhi2-vf-output:/root/Videos/mhi2-video-finder:Z
     restart: unless-stopped
