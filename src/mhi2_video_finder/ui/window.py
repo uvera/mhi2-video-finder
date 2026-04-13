@@ -35,7 +35,7 @@ from PyQt6.QtWidgets import (
 from mhi2_video_finder import __version__
 from mhi2_video_finder.config import Settings, default_config_path, load_settings, save_settings
 from mhi2_video_finder.search import VideoCandidate
-from mhi2_video_finder.workflow import ensure_output_dir, safe_stem, unique_out_path
+from mhi2_video_finder.workflow import ensure_output_dir, safe_stem, slug_dir_name, unique_out_path
 
 from .backends.remote import RemoteJobController
 from .job_store import JobStore
@@ -461,6 +461,14 @@ class MainWindow(QWidget):
         self.subdir_edit.setText("gui-downloads")
         queue_row.addWidget(QLabel("Subfolder:"))
         queue_row.addWidget(self.subdir_edit)
+        self.infer_subdir_cb = QCheckBox("Infer subfolder from artist / channel")
+        self.infer_subdir_cb.setToolTip(
+            "After a successful search, set the subfolder from the Artist field when it is filled, "
+            "from the channel query when Source is “Channel videos”, "
+            "or from the first result’s channel name otherwise."
+        )
+        self.infer_subdir_cb.toggled.connect(self._on_infer_subdir_toggled)
+        queue_row.addWidget(self.infer_subdir_cb)
         self.no_embed_cb = QCheckBox("Transcode only (no tags / album art)")
         queue_row.addWidget(self.no_embed_cb)
         self.queue_btn = QPushButton("Queue selected for download")
@@ -697,6 +705,26 @@ class MainWindow(QWidget):
             self.results_table.setItem(i, 2, QTableWidgetItem(c.channel))
             self.results_table.setItem(i, 3, QTableWidgetItem(fmt_duration(c.duration)))
             self.results_table.setItem(i, 4, QTableWidgetItem(c.url))
+
+        self._apply_inferred_subdir_from_results()
+
+    def _apply_inferred_subdir_from_results(self) -> None:
+        if not self.infer_subdir_cb.isChecked() or not self._results:
+            return
+        artist = self.artist_edit.text().strip()
+        idx = self.source_combo.currentIndex()
+        mode = ("search", "channel", "playlist", "video_url")[idx]
+        if artist:
+            sub = slug_dir_name(artist, "gui-downloads")
+        elif mode == "channel":
+            sub = slug_dir_name(self.query_edit.text(), "gui-downloads")
+        else:
+            sub = slug_dir_name(self._results[0].channel, "gui-downloads")
+        self.subdir_edit.setText(sub)
+
+    def _on_infer_subdir_toggled(self, checked: bool) -> None:
+        if checked and self._results:
+            self._apply_inferred_subdir_from_results()
 
     def _set_all_results_checked(self, checked: bool) -> None:
         state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked

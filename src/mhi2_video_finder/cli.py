@@ -16,6 +16,7 @@ from mhi2_video_finder.workflow import (
     ensure_and_print_output_dir,
     fmt_duration,
     gather_search_rows,
+    infer_subdir_name,
     parse_multi_pick,
     safe_stem,
     slug_dir_name,
@@ -244,6 +245,14 @@ def cmd_get(
         "-d",
         help="Save under this subfolder of output_dir (ignored if -o is set).",
     ),
+    infer_subdir: bool = typer.Option(
+        False,
+        "--infer-subdir",
+        help=(
+            "With default output path, use a subfolder from --artist if set, "
+            "otherwise from the selected video's channel name (--subdir overrides)."
+        ),
+    ),
     use_youtube_api: bool = typer.Option(False, "--use-youtube-api"),
     no_embed: bool = typer.Option(
         False,
@@ -282,15 +291,18 @@ def cmd_get(
 
     typer.echo(f"Selected: {chosen.title}", err=True)
 
+    stem = safe_stem(chosen.title, chosen.video_id)
     out_path: Path
     if output is not None:
         out_path = output.expanduser().resolve()
         ensure_and_print_output_dir(out_path.parent)
     else:
         s.merged_output_dir()
-        stem = safe_stem(chosen.title, chosen.video_id)
-        if subdir:
-            sub_folder = ensure_and_print_output_dir(s.output_dir / subdir)
+        eff_sub = subdir
+        if eff_sub is None and infer_subdir:
+            eff_sub = infer_subdir_name(artist=artist, channel=chosen.channel or None)
+        if eff_sub:
+            sub_folder = ensure_and_print_output_dir(s.output_dir / eff_sub)
             out_path = unique_out_path(sub_folder, stem, chosen.video_id)
         else:
             base = ensure_and_print_output_dir(s.output_dir.resolve())
@@ -320,6 +332,11 @@ def cmd_interactive(
         "--subdir",
         "-d",
         help="Output subfolder under config output_dir (skips prompt if set).",
+    ),
+    infer_subdir: bool = typer.Option(
+        False,
+        "--infer-subdir",
+        help="Skip the subfolder prompt; use the default name inferred from search/channel input.",
     ),
     no_embed: bool = typer.Option(
         False,
@@ -442,11 +459,14 @@ def cmd_interactive(
 
     folder_name = subdir
     if not folder_name:
-        try:
-            prompt = f"Subfolder under {base_out} [{subdir_default}]: "
-            folder_name = input(prompt).strip() or subdir_default
-        except EOFError:
-            raise typer.Abort()
+        if infer_subdir:
+            folder_name = subdir_default
+        else:
+            try:
+                prompt = f"Subfolder under {base_out} [{subdir_default}]: "
+                folder_name = input(prompt).strip() or subdir_default
+            except EOFError:
+                raise typer.Abort()
 
     out_folder = ensure_and_print_output_dir(base_out / folder_name)
 

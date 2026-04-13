@@ -32,6 +32,16 @@ def slug_dir_name(text: str, fallback: str = "session") -> str:
     return base
 
 
+def infer_subdir_name(*, artist: str | None, channel: str | None, fallback: str = "download") -> str:
+    """Slug a subfolder name from artist (if set) or uploader/channel name."""
+    if artist and artist.strip():
+        return slug_dir_name(artist.strip(), fallback)
+    ch = (channel or "").strip()
+    if ch:
+        return slug_dir_name(ch, fallback)
+    return fallback
+
+
 def ensure_output_dir(folder: Path) -> Path:
     """Create folder on disk immediately; return absolute path."""
     resolved = folder.expanduser().resolve()

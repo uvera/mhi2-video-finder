@@ -1,6 +1,6 @@
 """Tests for interactive pick parsing helpers."""
 
-from mhi2_video_finder.workflow import parse_multi_pick, slug_dir_name
+from mhi2_video_finder.workflow import infer_subdir_name, parse_multi_pick, slug_dir_name
 
 
 def test_parse_multi_pick_single() -> None:
@@ -31,3 +31,14 @@ def test_parse_multi_pick_empty_and_out_of_range() -> None:
 def test_slug_dir_name() -> None:
     assert "daft" in slug_dir_name("Daft Punk Around", "x").lower()
     assert slug_dir_name("   ", "fallback") == "fallback"
+
+
+def test_infer_subdir_name_prefers_artist() -> None:
+    a = infer_subdir_name(artist="Daft Punk", channel="Vevo")
+    b = infer_subdir_name(artist=None, channel="Some Channel")
+    assert "daft" in a.lower()
+    assert "some" in b.lower()
+
+
+def test_infer_subdir_name_fallback() -> None:
+    assert infer_subdir_name(artist=None, channel=None, fallback="z") == "z"
