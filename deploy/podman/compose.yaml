@@ -36,6 +36,7 @@ services:
       PYTHONUNBUFFERED: "1"
       DAEMON_STATE_DIR: /var/lib/mhi2-video-finder/state
       MHI2_VIDEO_FINDER_CONFIG: /config/config.toml
+      # Optional Telegram bot (also set in .env): TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USER_IDS
       # NDJSON runtime diagnostics (emit_debug_log); host path: ./debug/debug-runtime.log
       MHI2_VF_DEBUG_LOG_PATH: /var/lib/mhi2-video-finder/debug/debug-runtime.log
     volumes:

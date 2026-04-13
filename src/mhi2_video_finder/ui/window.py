@@ -5,6 +5,7 @@ from __future__ import annotations
 from functools import partial
 from pathlib import Path
 import threading
+from typing import Any
 
 import httpx
 from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
@@ -50,6 +51,9 @@ _ENCODER_CHOICES: tuple[tuple[str, str], ...] = (
 from .models import UiJob
 from .workers import BulkUrlResolveWorker, ConvertService, DownloadService, SearchWorker, new_job_id
 
+# Remote-download target subfolder for jobs imported from the daemon (Telegram / API), not from this UI queue.
+_REMOTE_DAEMON_IMPORT_SUBDIR = "daemon-imports"
+
 
 class _RemoteFetchBridge(QObject):
     ok = pyqtSignal(str)
@@ -91,6 +95,7 @@ class MainWindow(QWidget):
             self._remote.connection_error.connect(self._on_remote_connection_error)
             self._remote.remote_registered.connect(self._on_remote_registered)
             self._remote.remote_missing.connect(self._on_remote_missing)
+            self._remote.recent_jobs_ready.connect(self._on_remote_daemon_jobs_imported)
             self._dl = self._remote.dl
             self._cv = self._remote.cv
             self._remote.start_ws()
@@ -127,6 +132,73 @@ class MainWindow(QWidget):
         self._load_persisted_jobs()
         self._refresh_downloads_table()
         self._refresh_convert_table()
+        if self._remote is not None:
+            self._remote.fetch_recent_jobs_async(200)
+
+    def _on_remote_daemon_jobs_imported(self, rows: object) -> None:
+        """Materialize daemon-side jobs into local rows (no POST /v1/jobs)."""
+        if not isinstance(rows, list) or not self._use_remote or self._remote is None:
+            return
+        existing_remote = {j.remote_job_id for j in self._jobs.values() if j.remote_job_id}
+        out_root = ensure_output_dir(
+            self._settings.merged_remote_download_dir() / _REMOTE_DAEMON_IMPORT_SUBDIR
+        )
+        added = 0
+        # Server returns newest-first; append oldest first so recent imports land at the bottom.
+        for row in reversed(rows):
+            if not isinstance(row, dict):
+                continue
+            rid = row.get("job_id")
+            if not isinstance(rid, str) or not rid.strip() or rid in existing_remote:
+                continue
+            url = row.get("url")
+            if not isinstance(url, str) or not url.strip():
+                continue
+            existing_remote.add(rid)
+
+            vid = str(row.get("video_id") or "").strip()
+            if len(vid) != 11 and "watch?v=" in url:
+                vid = url.split("v=", 1)[1].split("&")[0][:11]
+            if len(vid) != 11:
+                vid = ""
+            canon_url = f"https://www.youtube.com/watch?v={vid}" if len(vid) == 11 else url.strip()
+            title = str(row.get("title") or "").strip() or "(no title)"
+            channel = str(row.get("channel") or "").strip()
+            cand = VideoCandidate(
+                video_id=vid,
+                title=title,
+                duration=None,
+                channel=channel,
+                url=canon_url,
+            )
+            stem = safe_stem(cand.title, cand.video_id or rid[:12])
+            name_key = cand.video_id if len(cand.video_id) == 11 else rid
+            outp = unique_out_path(out_root, stem, name_key)
+
+            jid = new_job_id()
+            job = UiJob(
+                job_id=jid,
+                candidate=cand,
+                out_path=outp,
+                no_embed=bool(row.get("no_embed")),
+                backend="remote",
+                remote_saved_locally=False,
+                remote_job_id=rid,
+                remote_job_origin="remote_sync",
+                download_status="queued",
+                convert_status="waiting",
+            )
+            self._jobs[jid] = job
+            self._job_order.append(jid)
+            self._persist_job(job)
+            self._remote.register_existing(jid, rid)
+            self._remote.sync_job_from_server(jid, rid)
+            added += 1
+
+        if added:
+            self._refresh_downloads_table()
+            self._refresh_convert_table()
+            self._status.setText(f"Imported {added} job(s) from remote daemon.")
 
     def _persist_job(self, job: UiJob) -> None:
         try:
@@ -795,6 +867,7 @@ class MainWindow(QWidget):
             no_embed=ne,
             backend=backend,
             remote_saved_locally=backend != "remote",
+            remote_job_origin="desktop",
         )
         self._jobs[jid] = job
         self._job_order.append(jid)
@@ -1297,6 +1370,8 @@ class MainWindow(QWidget):
         job.convert_indeterminate = False
         job.remote_saved_locally = job.backend != "remote"
         job.remote_job_id = None
+        if job.backend == "remote":
+            job.remote_job_origin = "desktop"
         if job.backend == "remote" and self._remote:
             self._remote.reset_local_tracking(job.job_id)
             sub = self.subdir_edit.text().strip() or "gui-downloads"
@@ -1433,7 +1508,7 @@ class MainWindow(QWidget):
             self._persist_job(job)
             self._refresh_downloads_table()
             self._refresh_convert_table()
-            if self._settings.remote_auto_download:
+            if self._settings.remote_auto_download and job.remote_job_origin == "desktop":
                 self._start_remote_fetch(job)
             else:
                 self._status.setText(f"Remote job done — save to PC: {job.candidate.title}")

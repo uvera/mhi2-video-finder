@@ -24,6 +24,9 @@ def test_job_store_roundtrip(tmp_path: Path) -> None:
         no_embed=True,
         download_status="queued",
         convert_status="waiting",
+        backend="remote",
+        remote_job_id="remote-1",
+        remote_job_origin="remote_sync",
     )
     store.upsert(job, 0)
     loaded = store.load_all()
@@ -33,6 +36,8 @@ def test_job_store_roundtrip(tmp_path: Path) -> None:
     assert j2.candidate.video_id == cand.video_id
     assert j2.no_embed is True
     assert j2.out_path == job.out_path
+    assert j2.remote_job_origin == "remote_sync"
+    assert j2.remote_job_id == "remote-1"
     store.close()
 
 

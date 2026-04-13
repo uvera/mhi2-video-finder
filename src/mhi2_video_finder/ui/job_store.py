@@ -73,6 +73,10 @@ class JobStore:
             self._conn.execute("ALTER TABLE jobs ADD COLUMN remote_saved INTEGER NOT NULL DEFAULT 1")
         if "remote_job_id" not in cols:
             self._conn.execute("ALTER TABLE jobs ADD COLUMN remote_job_id TEXT")
+        if "remote_job_origin" not in cols:
+            self._conn.execute(
+                "ALTER TABLE jobs ADD COLUMN remote_job_origin TEXT NOT NULL DEFAULT 'desktop'"
+            )
         self._conn.commit()
 
     def upsert(self, job: UiJob, seq: int) -> None:
@@ -96,8 +100,9 @@ class JobStore:
             INSERT INTO jobs (
                 job_id, seq, video_id, title, channel, url, duration, out_path, raw_path,
                 download_status, convert_status, download_error, convert_error,
-                no_embed, ytdlp_info_json, updated_at, backend, remote_saved, remote_job_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                no_embed, ytdlp_info_json, updated_at, backend, remote_saved, remote_job_id,
+                remote_job_origin
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(job_id) DO UPDATE SET
                 seq = excluded.seq,
                 video_id = excluded.video_id,
@@ -116,7 +121,8 @@ class JobStore:
                 updated_at = excluded.updated_at,
                 backend = excluded.backend,
                 remote_saved = excluded.remote_saved,
-                remote_job_id = excluded.remote_job_id
+                remote_job_id = excluded.remote_job_id,
+                remote_job_origin = excluded.remote_job_origin
             """,
             (
                 job.job_id,
@@ -138,6 +144,7 @@ class JobStore:
                 job.backend,
                 1 if job.remote_saved_locally else 0,
                 job.remote_job_id,
+                (job.remote_job_origin or "desktop").strip() or "desktop",
             ),
         )
         self._conn.commit()
@@ -178,6 +185,7 @@ class JobStore:
             backend = (d.get("backend") or "local").strip() or "local"
             remote_saved = bool(d.get("remote_saved", 1))
             rjid = d.get("remote_job_id")
+            rjo = (d.get("remote_job_origin") or "desktop").strip() or "desktop"
             job = UiJob(
                 job_id=d["job_id"],
                 candidate=cand,
@@ -192,6 +200,7 @@ class JobStore:
                 backend=backend,
                 remote_saved_locally=remote_saved,
                 remote_job_id=str(rjid) if rjid else None,
+                remote_job_origin=rjo,
             )
             out.append(job)
         return out

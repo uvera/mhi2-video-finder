@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,9 @@ class _ExecutorStub:
 
     def submit(self, fn: object, *args: object) -> None:
         self.submissions.append((fn, args))
+
+    def shutdown(self, *, wait: bool = True, cancel_futures: bool = False) -> None:
+        del wait, cancel_futures
 
 
 def _new_engine(tmp_path: Path) -> tuple[JobEngine, DaemonJobStore]:
@@ -49,8 +53,8 @@ def test_download_stall_retries_once_then_continues(
         )
     )
 
-    monotonic_values = iter([0.0, 0.0, 11.1, 20.0])
-    monkeypatch.setattr(engine_mod.time, "monotonic", lambda: next(monotonic_values))
+    mono = iter(itertools.chain([0.0, 0.0, 11.1, 20.0], itertools.count(30.0, 1.0)))
+    monkeypatch.setattr(engine_mod.time, "monotonic", lambda: next(mono))
 
     calls = {"n": 0}
 
@@ -95,8 +99,8 @@ def test_download_stall_then_second_failure_cancels_job(
         )
     )
 
-    monotonic_values = iter([0.0, 0.0, 11.1, 20.0])
-    monkeypatch.setattr(engine_mod.time, "monotonic", lambda: next(monotonic_values))
+    mono = iter(itertools.chain([0.0, 0.0, 11.1, 20.0], itertools.count(30.0, 1.0)))
+    monkeypatch.setattr(engine_mod.time, "monotonic", lambda: next(mono))
 
     calls = {"n": 0}
 

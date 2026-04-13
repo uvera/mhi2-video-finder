@@ -169,9 +169,10 @@ Run download + transcode on a machine that stays on (e.g. **Podman** on a home s
 - **Run:** `mhi2-video-finder-daemon` — listens on `DAEMON_HOST` / `DAEMON_PORT` (default `127.0.0.1:8765`). Set **`DAEMON_BEARER_TOKEN`** for LAN auth (same value in the GUI bearer field).
 - **State:** `DAEMON_STATE_DIR` (default `/var/lib/mhi2-video-finder/state`) holds the SQLite job DB; mount it on a volume for persistence.
 - **API:** OpenAPI [docs/daemon-api.yaml](docs/daemon-api.yaml) and WebSocket events [docs/daemon-websocket.md](docs/daemon-websocket.md).
+- **Telegram bot (optional):** set **`TELEGRAM_BOT_TOKEN`** and **`TELEGRAM_ALLOWED_USER_IDS`** (comma-separated numeric user IDs). The daemon runs Telegram long polling in-process and queues YouTube links like `POST /v1/jobs`. Set **`TELEGRAM_ENABLED=0`** to disable while keeping the token in the environment.
 - **Container / Podman:** [deploy/podman/README.md](deploy/podman/README.md), [deploy/podman/compose.yaml](deploy/podman/compose.yaml), and [Containerfile](Containerfile).
 
-**GUI:** In **Settings → Processing backend**, choose **Remote server (Podman daemon)**, set base URL and token, and a **local folder** where finished files are saved (**Save to PC** on the Convert tab, or enable **Auto-download**). Switching local ↔ remote requires **restarting** `mhi2-video-finder-ui`.
+**GUI:** In **Settings → Processing backend**, choose **Remote server (Podman daemon)**, set base URL and token, and a **local folder** where finished files are saved (**Save to PC** on the Convert tab, or enable **Auto-download**). On startup, the app imports recent daemon jobs (e.g. from Telegram) into Downloads/Convert under `remote_download_dir/daemon-imports/`. **Auto-download** applies only to jobs you queued from this GUI; imported/synced jobs still use **Save to PC**. Switching local ↔ remote requires **restarting** `mhi2-video-finder-ui`.
 
 Optional `config.toml` keys (same as other settings, or `MHI2_VIDEO_FINDER_*` env):
 

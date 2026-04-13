@@ -98,6 +98,8 @@ class RemoteJobController(QObject):
     connection_error = pyqtSignal(str)
     remote_registered = pyqtSignal(str, str)  # local_job_id, remote_job_id (after POST)
     remote_missing = pyqtSignal(str, str)  # local_job_id, reason (remote job vanished)
+    # Emitted on GUI thread after ``GET /v1/jobs`` (used to import daemon-created jobs).
+    recent_jobs_ready = pyqtSignal(list)
     # Short status text for the main window (emitted from worker threads; Qt queues to GUI thread).
     user_status = pyqtSignal(str)
 
@@ -207,6 +209,37 @@ class RemoteJobController(QObject):
 
     def sync_job_from_server(self, local_id: str, remote_id: str) -> None:
         threading.Thread(target=self._get_status_and_reconcile, args=(local_id, remote_id), daemon=True).start()
+
+    def fetch_recent_jobs_async(self, limit: int = 200) -> None:
+        """Fetch ``GET /v1/jobs`` in a worker thread; emit ``recent_jobs_ready`` on the GUI thread."""
+
+        def _run() -> None:
+            rows = self._fetch_recent_jobs_sync(limit)
+            self.recent_jobs_ready.emit(rows)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _fetch_recent_jobs_sync(self, limit: int) -> list[dict[str, Any]]:
+        base = self._base()
+        if not base:
+            return []
+        lim = max(1, min(200, int(limit)))
+        try:
+            with httpx.Client(timeout=httpx.Timeout(60.0, connect=15.0)) as c:
+                r = c.get(f"{base}/v1/jobs", params={"limit": lim}, headers=self._headers())
+            if r.status_code == 401:
+                self.connection_error.emit("Import jobs: unauthorized (check remote bearer token).")
+                return []
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            _log.warning("GET /v1/jobs failed: %s", e)
+            self.connection_error.emit(f"Import jobs failed: {e}")
+            return []
+        jobs = data.get("jobs")
+        if not isinstance(jobs, list):
+            return []
+        return [j for j in jobs if isinstance(j, dict)]
 
     def _headers(self) -> dict[str, str]:
         s = self._get_settings()

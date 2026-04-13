@@ -63,6 +63,7 @@ Some `podman-compose` versions print their own noise; `podman logs` shows only t
 
 - **`config.toml`** must exist before `up` (compose mounts it read-only). It sets `raw_cache_dir` and `output_dir` to the in-container paths used by the named volumes in [compose.yaml](compose.yaml).
 - **`.env`** holds `DAEMON_BEARER_TOKEN` (gitignored) and is loaded via `env_file` (no compose interpolation); use the same token in the GUI remote settings.
+- **Telegram bot (optional):** set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALLOWED_USER_IDS` (comma-separated numeric Telegram user IDs) in `.env`. The daemon starts a long-polling worker in the same process and queues YouTube URLs as normal daemon jobs. Without an allowlist, the bot does not start. See comments in [`.env.example`](.env.example).
 - **`MHI2_VF_PORT`** in `.env` changes the published host port (default `8765`).
 - **Debug NDJSON logs** (daemon instrumentation via `emit_debug_log`) are written to **`debug/debug-runtime.log`** next to `compose.yaml` (bind-mounted into the container). The `debug/` folder is a normal directory on disk, not a Git repository (there is no `debug/.git`).
 - If the bind mount is not writable (permissions / SELinux), the daemon falls back to **`/tmp/mhi2-video-finder/debug-runtime.log`** inside the container and prints errors to **container logs** (`podman logs mhi2-vf`). Check there if `debug/` stays empty.

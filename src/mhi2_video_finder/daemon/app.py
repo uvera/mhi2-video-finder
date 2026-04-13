@@ -24,6 +24,7 @@ from mhi2_video_finder.daemon.engine import JobEngine
 from mhi2_video_finder.daemon.hub import WsHub
 from mhi2_video_finder.daemon.models import JobStatus
 from mhi2_video_finder.daemon.store import DaemonJobStore
+from mhi2_video_finder.daemon.telegram_bot import TelegramBotRunner
 from mhi2_video_finder.daemon.urlvalidate import validate_youtube_url
 from mhi2_video_finder.workflow import safe_stem
 
@@ -76,11 +77,12 @@ hub = WsHub()
 store: DaemonJobStore | None = None
 engine: JobEngine | None = None
 app_settings: Settings | None = None
+telegram_runner: TelegramBotRunner | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global store, engine, app_settings
+    global store, engine, app_settings, telegram_runner
     import asyncio
 
     loop = asyncio.get_running_loop()
@@ -116,7 +118,11 @@ async def lifespan(app: FastAPI):
     store = DaemonJobStore(db_path)
     engine = JobEngine(app_settings, store, hub, loop)
     engine.recover_non_terminal()
+    telegram_runner = TelegramBotRunner.maybe_start(engine)
     yield
+    if telegram_runner:
+        telegram_runner.stop()
+        telegram_runner = None
     if engine:
         engine.shutdown(wait=True)
     if store:
