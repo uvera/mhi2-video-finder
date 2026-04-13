@@ -8,6 +8,9 @@ from urllib.parse import urlparse
 
 import yt_dlp
 
+from mhi2_video_finder.download import normalize_watch_url
+from mhi2_video_finder.paste_urls import parse_pasted_video_urls
+
 
 @dataclass
 class VideoCandidate:
@@ -87,9 +90,12 @@ def video_from_url(
     match_filter: str | None = None,
 ) -> VideoCandidate:
     """Resolve a single watch URL (youtube.com, youtu.be, Shorts, etc.) via yt-dlp."""
-    u = url.strip()
+    u = normalize_watch_url(url.strip())
     if not u:
         raise ValueError("URL is empty")
+    normalized = parse_pasted_video_urls(u)
+    if normalized:
+        u = normalized[0]
     opts: dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,

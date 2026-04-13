@@ -43,6 +43,30 @@ def test_video_from_url_single_video_mock() -> None:
     assert c.url == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
 
+def test_video_from_url_watch_with_list_and_radio_params_is_canonicalized() -> None:
+    fake = {
+        "id": "47bJs521ixs",
+        "title": "Example Song",
+        "channel": "Example Channel",
+        "duration": 180,
+        "url": "https://www.youtube.com/watch?v=47bJs521ixs",
+    }
+    mock_ydl = MagicMock()
+    mock_ydl.extract_info.return_value = fake
+    mock_cm = MagicMock()
+    mock_cm.__enter__.return_value = mock_ydl
+    mock_cm.__exit__.return_value = None
+    with patch("mhi2_video_finder.search.yt_dlp.YoutubeDL", return_value=mock_cm):
+        c = video_from_url(
+            "https://www.youtube.com/watch?v=47bJs521ixs&list=RD47bJs521ixs&start_radio=1&t=1834s"
+        )
+    mock_ydl.extract_info.assert_called_once_with(
+        "https://www.youtube.com/watch?v=47bJs521ixs",
+        download=False,
+    )
+    assert c.video_id == "47bJs521ixs"
+
+
 def test_video_from_url_playlist_rejected_mock() -> None:
     fake = {
         "entries": [

@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
 
 from mhi2_video_finder import __version__
 from mhi2_video_finder.config import Settings, default_config_path, load_settings, save_settings
+from mhi2_video_finder.paste_urls import parse_pasted_video_urls
 from mhi2_video_finder.search import VideoCandidate
 from mhi2_video_finder.workflow import ensure_output_dir, safe_stem, slug_dir_name, unique_out_path
 
@@ -411,7 +412,8 @@ class MainWindow(QWidget):
         paste_lay = QVBoxLayout(paste_box)
         self.bulk_urls_edit = QTextEdit()
         self.bulk_urls_edit.setPlaceholderText(
-            "One URL per line (YouTube watch, youtu.be, Shorts, …). "
+            "YouTube links (watch, youtu.be, Shorts, …), one per line or pasted from chat logs. "
+            "Extra query params and timestamp prefixes are stripped. "
             "Empty lines and lines starting with # are ignored."
         )
         self.bulk_urls_edit.setAcceptRichText(False)
@@ -778,19 +780,6 @@ class MainWindow(QWidget):
             base = self._settings.merged_output_dir()
         return ensure_output_dir(base / sub)
 
-    @staticmethod
-    def _parse_pasted_video_urls(text: str) -> list[str]:
-        seen: set[str] = set()
-        out: list[str] = []
-        for line in text.splitlines():
-            s = line.strip()
-            if not s or s.startswith("#"):
-                continue
-            if s not in seen:
-                seen.add(s)
-                out.append(s)
-        return out
-
     def _enqueue_job_for_candidate(self, c: VideoCandidate) -> None:
         out_folder = self._output_folder()
         self._cv.set_no_embed(self.no_embed_cb.isChecked())
@@ -844,7 +833,7 @@ class MainWindow(QWidget):
         self._refresh_convert_table()
 
     def _start_queue_pasted_urls(self) -> None:
-        urls = self._parse_pasted_video_urls(self.bulk_urls_edit.toPlainText())
+        urls = parse_pasted_video_urls(self.bulk_urls_edit.toPlainText())
         if not urls:
             QMessageBox.information(
                 self,
