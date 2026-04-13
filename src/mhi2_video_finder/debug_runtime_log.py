@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import time
@@ -62,17 +63,30 @@ def debug_log_candidate_paths() -> list[Path]:
     return _candidate_log_paths()
 
 
+def log_daemon_visible(message: str, *, level: int = logging.INFO) -> None:
+    """Write to stderr and to uvicorn's logger (shows in podman/docker logs reliably)."""
+    line = message.rstrip("\n")
+    try:
+        sys.stderr.write(line + "\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+    try:
+        logging.getLogger("uvicorn.error").log(level, "%s", line)
+    except Exception:
+        pass
+
+
 def debug_startup_stderr_banner(component: str = "daemon") -> None:
-    """Always print candidate paths to stderr (visible in podman/docker logs)."""
+    """Announce NDJSON paths at startup (stderr + uvicorn INFO)."""
     try:
         paths = _candidate_log_paths()
         explicit = (os.environ.get("MHI2_VF_DEBUG_LOG_PATH") or "").strip()
-        sys.stderr.write(
+        msg = (
             f"mhi2-vf[{component}]: NDJSON debug paths (explicit={explicit!r}): "
             + " -> ".join(str(p) for p in paths)
-            + "\n"
         )
-        sys.stderr.flush()
+        log_daemon_visible(msg)
     except Exception:
         pass
 
@@ -101,10 +115,6 @@ def emit_debug_log(hypothesis_id: str, location: str, message: str, data: dict[s
             errors.append(f"{path}: {e}")
         except Exception as e:
             errors.append(f"{path}: {e!r}")
-    try:
-        msg = "mhi2-vf emit_debug_log: could not write to any path; tried:\n  " + "\n  ".join(errors)
-        sys.stderr.write(msg + "\n")
-        sys.stderr.flush()
-    except Exception:
-        pass
+    msg = "mhi2-vf emit_debug_log: could not write to any path; tried:\n  " + "\n  ".join(errors)
+    log_daemon_visible(msg, level=logging.ERROR)
     return None

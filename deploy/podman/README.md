@@ -38,7 +38,7 @@ Some `podman-compose` versions print their own noise; `podman logs` shows only t
 
 1. Rebuild so the image includes current code: `podman compose up -d --build` or `podman-compose up -d --build`.
 2. Confirm the variable inside the container: `podman exec mhi2-vf env | grep MHI2_VF_DEBUG_LOG_PATH`
-3. On startup you should see **`mhi2-vf[daemon]: NDJSON debug paths`** and **`NDJSON debug active -> ...`** in **`podman logs mhi2-vf 2>&1`** (if those lines are missing, rebuild the image — the running container is too old).
+3. On startup you should see **`mhi2-vf[daemon]: NDJSON debug paths`** and **`NDJSON debug active -> ...`** as **uvicorn INFO lines** in **`podman logs mhi2-vf 2>&1`** (if those lines are missing, rebuild the image — the running container is too old).
 4. Watch for `emit_debug_log: could not write` in the same logs if every path fails.
 5. Optional: `podman exec mhi2-vf sh -c 'touch /var/lib/mhi2-video-finder/debug/.write-test && ls -la /var/lib/mhi2-video-finder/debug/'`
 
