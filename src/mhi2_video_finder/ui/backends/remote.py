@@ -15,6 +15,7 @@ import websocket
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from mhi2_video_finder.config import Settings
+from mhi2_video_finder.debug_runtime_log import emit_debug_log as _debug_log
 
 _log = logging.getLogger(__name__)
 
@@ -125,8 +126,24 @@ class RemoteJobController(QObject):
     def enqueue(self, local_id: str, url: str) -> None:
         p = self._pending.get(local_id)
         if not p:
+            # region agent log
+            _debug_log(
+                "H1",
+                "ui/backends/remote.py:150",
+                "enqueue rejected due missing pending payload",
+                {"local_id": local_id},
+            )
+            # endregion
             self.dl.item_failed.emit(local_id, "internal: missing pending job payload")
             return
+        # region agent log
+        _debug_log(
+            "H1",
+            "ui/backends/remote.py:159",
+            "enqueue accepted and post thread starting",
+            {"local_id": local_id, "url": url},
+        )
+        # endregion
         threading.Thread(target=self._post_job, args=(local_id, url, p), daemon=True).start()
 
     def set_pending_job(
@@ -218,6 +235,15 @@ class RemoteJobController(QObject):
             )
             return
         post_url = f"{base}/v1/jobs"
+        req_started = time.time()
+        # region agent log
+        _debug_log(
+            "H2",
+            "ui/backends/remote.py:260",
+            "starting POST /v1/jobs",
+            {"local_id": local_id, "post_url": post_url},
+        )
+        # endregion
         self.user_status.emit(f"Remote: POST {post_url} …")
         _log.info("POST %s local_job_id=%s body_url=%s", post_url, local_id, url)
         try:
@@ -233,6 +259,18 @@ class RemoteJobController(QObject):
             timeout = httpx.Timeout(120.0, connect=15.0)
             with httpx.Client(timeout=timeout) as c:
                 r = c.post(post_url, json=body, headers=self._headers())
+            # region agent log
+            _debug_log(
+                "H2",
+                "ui/backends/remote.py:279",
+                "POST /v1/jobs finished",
+                {
+                    "local_id": local_id,
+                    "status_code": r.status_code,
+                    "elapsed_ms": int((time.time() - req_started) * 1000),
+                },
+            )
+            # endregion
             _log.info("POST response %s %s", r.status_code, r.headers.get("content-type", ""))
             try:
                 r.raise_for_status()
@@ -262,6 +300,14 @@ class RemoteJobController(QObject):
             with self._lock:
                 self._l2r[local_id] = rid
                 self._r2l[rid] = local_id
+            # region agent log
+            _debug_log(
+                "H1",
+                "ui/backends/remote.py:318",
+                "local to remote mapping registered",
+                {"local_id": local_id, "remote_id": rid},
+            )
+            # endregion
             _log.info("remote job id %s for local %s", rid, local_id)
             self.remote_registered.emit(local_id, rid)
             self._subscribe_remote(rid)
@@ -462,6 +508,15 @@ class RemoteJobController(QObject):
         if mtype == "job_state_changed":
             st = o.get("status")
             ph = o.get("phase")
+            if st in ("queued", "downloading", "converting"):
+                # region agent log
+                _debug_log(
+                    "H4",
+                    "ui/backends/remote.py:533",
+                    "ws state changed received",
+                    {"local_id": lid, "remote_id": rid, "status": st, "phase": ph},
+                )
+                # endregion
             if st == "converting" or (st == "downloading" and ph == "convert"):
                 self._emit_dl_done_bridge(lid)
         elif mtype == "job_progress":
