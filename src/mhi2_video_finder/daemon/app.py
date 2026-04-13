@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,9 @@ from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from mhi2_video_finder import __version__
 from mhi2_video_finder.config import Settings, load_settings
+from mhi2_video_finder.debug_runtime_log import emit_debug_log as _debug_log
 
 from mhi2_video_finder.daemon.auth import require_bearer, ws_token_ok
 from mhi2_video_finder.daemon.engine import JobEngine
@@ -37,7 +40,27 @@ def _state_path() -> Path:
     raw = (os.environ.get("DAEMON_STATE_DIR") or "").strip()
     if raw:
         return Path(raw).expanduser().resolve() / "jobs.sqlite"
-    return Path("/var/lib/mhi2-video-finder/state/jobs.sqlite")
+    sys_path = Path("/var/lib/mhi2-video-finder/state/jobs.sqlite")
+    try:
+        sys_path.parent.mkdir(parents=True, exist_ok=True)
+        return sys_path
+    except OSError:
+        xdg_state = (os.environ.get("XDG_STATE_HOME") or "").strip()
+        if xdg_state:
+            base = Path(xdg_state).expanduser().resolve()
+        else:
+            base = (Path.home() / ".local" / "state").resolve()
+        fallback = base / "mhi2-video-finder" / "state" / "jobs.sqlite"
+        fallback.parent.mkdir(parents=True, exist_ok=True)
+        # region agent log
+        _debug_log(
+            "H6",
+            "daemon/app.py:53",
+            "default daemon state path not writable; falling back to user path",
+            {"fallback_path": str(fallback)},
+        )
+        # endregion
+        return fallback
 
 
 def _config_path() -> Path | None:
@@ -59,8 +82,25 @@ async def lifespan(app: FastAPI):
     import asyncio
 
     loop = asyncio.get_running_loop()
-    app_settings = load_settings(_config_path())
-    store = DaemonJobStore(_state_path())
+    cfg_path = _config_path()
+    db_path = _state_path()
+    app_settings = load_settings(cfg_path)
+    # region agent log
+    _debug_log(
+        "H7",
+        "daemon/app.py:108",
+        "daemon startup settings loaded",
+        {
+            "version": __version__,
+            "config_path": str(cfg_path) if cfg_path is not None else None,
+            "db_path": str(db_path),
+            "max_parallel_downloads": int(app_settings.max_parallel_downloads),
+            "max_parallel_converts": int(app_settings.max_parallel_converts),
+            "video_encoder": str(app_settings.video_encoder),
+        },
+    )
+    # endregion
+    store = DaemonJobStore(db_path)
     engine = JobEngine(app_settings, store, hub, loop)
     engine.recover_non_terminal()
     yield
@@ -89,6 +129,15 @@ def list_jobs(limit: int = 50) -> dict[str, Any]:
 @app.post("/v1/jobs", status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_bearer)])
 def create_job(body: CreateJobBody) -> dict[str, Any]:
     assert engine is not None
+    started = time.time()
+    # region agent log
+    _debug_log(
+        "H2",
+        "daemon/app.py:115",
+        "create_job request accepted",
+        {"url": body.url, "subdir": body.subdir, "video_id": body.video_id},
+    )
+    # endregion
     try:
         url = validate_youtube_url(body.url)
     except ValueError as e:
@@ -107,6 +156,14 @@ def create_job(body: CreateJobBody) -> dict[str, Any]:
         channel=body.channel,
         no_embed=body.no_embed,
     )
+    # region agent log
+    _debug_log(
+        "H2",
+        "daemon/app.py:139",
+        "create_job request finished",
+        {"job_id": row.job_id, "elapsed_ms": int((time.time() - started) * 1000)},
+    )
+    # endregion
     return {
         "job_id": row.job_id,
         "status": row.status.value,
