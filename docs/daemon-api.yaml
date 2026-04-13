@@ -25,6 +25,10 @@ paths:
                   status:
                     type: string
                     example: ok
+                  app_version:
+                    type: string
+                    description: Package version from the running daemon (for verifying deployments).
+                    example: "0.5.1"
 
   /v1/jobs:
     get:

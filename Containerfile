@@ -22,4 +22,5 @@ EXPOSE 8765
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz').read()" || exit 1
 
-CMD ["mhi2-video-finder-daemon"]
+# python -m avoids setuptools console-script wrapper (stdio/logging quirks in some setups).
+CMD ["python", "-u", "-m", "mhi2_video_finder.daemon.main"]

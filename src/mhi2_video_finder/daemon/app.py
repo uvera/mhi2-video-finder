@@ -128,7 +128,7 @@ app = FastAPI(title="mhi2-video-finder daemon", lifespan=lifespan)
 
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "app_version": __version__}
 
 
 @app.get("/v1/jobs", dependencies=[Depends(require_bearer)])
