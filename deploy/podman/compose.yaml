@@ -2,6 +2,10 @@
 # Run from this directory:
 #   cp -n config.toml.example config.toml   # edit paths/token as needed
 #   cp -n .env.example .env                   # set DAEMON_BEARER_TOKEN here
+#
+# After git pull, use ./rebuild-daemon.sh so the image actually rebuilds (up --build often skips).
+# Quick start without script: podman-compose build --no-cache && podman-compose up -d
+#
 #   podman compose up -d --build              # or: podman-compose up -d --build (older Podman)
 #
 # .env is passed directly to the container via env_file.

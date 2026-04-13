@@ -2,7 +2,28 @@
 
 ## Podman Compose (recommended)
 
-From **`deploy/podman/`**:
+### If `curl http://127.0.0.1:8765/healthz` shows only `{"status":"ok"}`
+
+That means the **container is still an old image**. Editing files under `src/` on the host does **nothing** until you **rebuild the image** and **recreate** the container. `podman-compose up -d --build` often **skips** the build when it thinks nothing changed.
+
+From **`deploy/podman/`** after `git pull`:
+
+```bash
+./rebuild-daemon.sh
+```
+
+Or manually:
+
+```bash
+podman-compose down
+podman-compose build --no-cache
+podman-compose up -d
+curl -sS http://127.0.0.1:8765/healthz   # expect "app_version" in JSON
+```
+
+---
+
+From **`deploy/podman/`** (first-time):
 
 ```bash
 cd deploy/podman
