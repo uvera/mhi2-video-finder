@@ -1355,20 +1355,23 @@ class MainWindow(QWidget):
         return detail, prog_txt, extra
 
     @staticmethod
-    def _convert_queue_sort_key(job: UiJob) -> tuple[int, str]:
-        """Order: Converting, Queued, failed/cancelled, then done (e.g. pending Save to PC)."""
+    def _convert_queue_sort_key(job: UiJob) -> tuple[int, int, str]:
+        """Order: Converting, Queued, failed/cancelled, then done.
+
+        Within *done*, remote rows still waiting for Save to PC come before saved/local finished.
+        """
+        title = (job.candidate.title or "").lower()
         st = job.convert_status
         if st == "converting":
-            group = 0
-        elif st in ("queued", "waiting"):
-            group = 1
-        elif st in ("failed", "cancelled"):
-            group = 2
-        elif st == "done":
-            group = 3
-        else:
-            group = 4
-        return (group, (job.candidate.title or "").lower())
+            return (0, 0, title)
+        if st in ("queued", "waiting"):
+            return (1, 0, title)
+        if st in ("failed", "cancelled"):
+            return (2, 0, title)
+        if st == "done":
+            pending_save = job.backend == "remote" and not job.remote_saved_locally
+            return (3, 0 if pending_save else 1, title)
+        return (4, 0, title)
 
     def _convert_status_progress(self, job: UiJob) -> tuple[str, str]:
         if job.backend == "remote" and job.convert_status == "done":
