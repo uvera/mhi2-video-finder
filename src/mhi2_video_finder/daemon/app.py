@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,6 +16,7 @@ from pydantic import BaseModel
 
 from mhi2_video_finder import __version__
 from mhi2_video_finder.config import Settings, load_settings
+from mhi2_video_finder.debug_runtime_log import debug_startup_stderr_banner
 from mhi2_video_finder.debug_runtime_log import emit_debug_log as _debug_log
 
 from mhi2_video_finder.daemon.auth import require_bearer, ws_token_ok
@@ -82,9 +84,24 @@ async def lifespan(app: FastAPI):
     import asyncio
 
     loop = asyncio.get_running_loop()
+    debug_startup_stderr_banner("daemon")
     cfg_path = _config_path()
     db_path = _state_path()
     app_settings = load_settings(cfg_path)
+    probe_path = _debug_log(
+        "probe",
+        "daemon/app.py:lifespan",
+        "debug log sink ready",
+        {"component": "daemon"},
+    )
+    try:
+        if probe_path:
+            sys.stderr.write(f"mhi2-vf: NDJSON debug active -> {probe_path}\n")
+        else:
+            sys.stderr.write("mhi2-vf: NDJSON debug not writable (no file created)\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
     # region agent log
     _debug_log(
         "H7",

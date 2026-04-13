@@ -22,8 +22,11 @@ podman compose up -d --build
 
 1. Rebuild so the image includes current code: `podman compose up -d --build`.
 2. Confirm the variable inside the container: `podman exec mhi2-vf env | grep MHI2_VF_DEBUG_LOG_PATH`
-3. Watch container stderr for `emit_debug_log: could not write`: `podman compose logs -f mhi2-vf`
-4. Optional: `podman exec mhi2-vf sh -c 'touch /var/lib/mhi2-video-finder/debug/.write-test && ls -la /var/lib/mhi2-video-finder/debug/'`
+3. On startup you should see **`mhi2-vf[daemon]: NDJSON debug paths`** and **`NDJSON debug active -> ...`** in `podman compose logs mhi2-vf` (if those lines are missing, rebuild the image — the running container is too old).
+4. Watch for `emit_debug_log: could not write` in the same logs if every path fails.
+5. Optional: `podman exec mhi2-vf sh -c 'touch /var/lib/mhi2-video-finder/debug/.write-test && ls -la /var/lib/mhi2-video-finder/debug/'`
+
+`/tmp/mhi2-video-finder/debug-runtime.log` only appears after a successful fallback write (when the bind-mounted path is not used or failed first). Prefer checking the path printed after **`NDJSON debug active ->`**.
 
 Do not set `MHI2_VF_DEBUG_LOG_PATH` to an empty value in `.env` (it would override the compose default in some setups).
 

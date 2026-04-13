@@ -57,7 +57,27 @@ def _candidate_log_paths() -> list[Path]:
     return out
 
 
-def emit_debug_log(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
+def debug_log_candidate_paths() -> list[Path]:
+    """Resolved paths tried for NDJSON logs (for diagnostics)."""
+    return _candidate_log_paths()
+
+
+def debug_startup_stderr_banner(component: str = "daemon") -> None:
+    """Always print candidate paths to stderr (visible in podman/docker logs)."""
+    try:
+        paths = _candidate_log_paths()
+        explicit = (os.environ.get("MHI2_VF_DEBUG_LOG_PATH") or "").strip()
+        sys.stderr.write(
+            f"mhi2-vf[{component}]: NDJSON debug paths (explicit={explicit!r}): "
+            + " -> ".join(str(p) for p in paths)
+            + "\n"
+        )
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def emit_debug_log(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> Path | None:
     payload: dict[str, Any] = {
         "runId": _run_id(),
         "hypothesisId": hypothesis_id,
@@ -76,7 +96,7 @@ def emit_debug_log(hypothesis_id: str, location: str, message: str, data: dict[s
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "a", encoding="utf-8") as f:
                 f.write(line)
-            return
+            return path
         except OSError as e:
             errors.append(f"{path}: {e}")
         except Exception as e:
@@ -87,3 +107,4 @@ def emit_debug_log(hypothesis_id: str, location: str, message: str, data: dict[s
         sys.stderr.flush()
     except Exception:
         pass
+    return None
