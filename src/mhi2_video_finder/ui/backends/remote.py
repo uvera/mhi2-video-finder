@@ -126,6 +126,7 @@ class RemoteJobController(QObject):
         # remote jobs are restored/imported at once.
         self._sync_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="vf-remote-sync")
         self._sync_inflight: set[tuple[str, str]] = set()
+        self._recent_jobs_fetch_lock = threading.Lock()
 
     def register_existing(self, local_id: str, remote_id: str) -> None:
         with self._lock:
@@ -256,10 +257,17 @@ class RemoteJobController(QObject):
 
     def fetch_recent_jobs_async(self, limit: int = 200) -> None:
         """Fetch ``GET /v1/jobs`` in a worker thread; emit ``recent_jobs_ready`` on the GUI thread."""
+        if self._stop.is_set():
+            return
+        if not self._recent_jobs_fetch_lock.acquire(blocking=False):
+            return
 
         def _run() -> None:
-            rows = self._fetch_recent_jobs_sync(limit)
-            self.recent_jobs_ready.emit(rows)
+            try:
+                rows = self._fetch_recent_jobs_sync(limit)
+                self.recent_jobs_ready.emit(rows)
+            finally:
+                self._recent_jobs_fetch_lock.release()
 
         threading.Thread(target=_run, daemon=True).start()
 

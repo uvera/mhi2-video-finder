@@ -60,6 +60,8 @@ from .workers import BulkUrlResolveWorker, ConvertService, DownloadService, Sear
 
 # Remote-download target subfolder for jobs imported from the daemon (Telegram / API), not from this UI queue.
 _REMOTE_DAEMON_IMPORT_SUBDIR = "daemon-imports"
+# Poll daemon job list so Telegram/API-created jobs appear without restarting the UI.
+_REMOTE_JOBS_POLL_MS = 10_000
 
 
 def _display_title_for_remote_row(raw_title: str) -> str:
@@ -146,6 +148,14 @@ class MainWindow(QWidget):
         self._refresh_downloads_table()
         self._refresh_convert_table()
         if self._remote is not None:
+            self._remote.fetch_recent_jobs_async(200)
+            self._remote_jobs_poll = QTimer(self)
+            self._remote_jobs_poll.setInterval(_REMOTE_JOBS_POLL_MS)
+            self._remote_jobs_poll.timeout.connect(self._poll_remote_daemon_jobs)
+            self._remote_jobs_poll.start()
+
+    def _poll_remote_daemon_jobs(self) -> None:
+        if self._remote is not None and self._use_remote:
             self._remote.fetch_recent_jobs_async(200)
 
     def _remote_sync_import_root(self) -> Path:
