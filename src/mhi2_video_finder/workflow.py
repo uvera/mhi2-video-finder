@@ -119,6 +119,11 @@ def unique_out_path(folder: Path, stem: str, video_id: str) -> Path:
     return folder / f"{stem}_{video_id}.mp4"
 
 
+def remote_save_out_path(folder: Path, stem: str) -> Path:
+    """Local path for remote Save to PC: always ``stem.mp4``, overwriting if it already exists."""
+    return folder / f"{stem}.mp4"
+
+
 def gather_search_rows(
     s: Settings,
     *,

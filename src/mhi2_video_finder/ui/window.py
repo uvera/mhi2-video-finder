@@ -40,6 +40,7 @@ from mhi2_video_finder.search import VideoCandidate
 from mhi2_video_finder.workflow import (
     ensure_output_dir,
     infer_subdir_name,
+    remote_save_out_path,
     safe_stem,
     slug_dir_name,
     unique_out_path,
@@ -173,9 +174,7 @@ class MainWindow(QWidget):
             return False
         folder = self._remote_sync_out_folder_for_channel(job.candidate.channel)
         stem = self._stem_for_remote_sync_job(job)
-        vid = job.candidate.video_id
-        name_key = vid if len(vid) == 11 else (job.remote_job_id or "video")
-        new_p = unique_out_path(folder, stem, name_key)
+        new_p = remote_save_out_path(folder, stem)
         if new_p.resolve() != job.out_path.resolve():
             job.out_path = new_p
             return True
@@ -219,8 +218,7 @@ class MainWindow(QWidget):
             )
             out_folder = self._remote_sync_out_folder_for_channel(channel)
             stem = safe_stem(raw_title, cand.video_id or rid[:12])
-            name_key = cand.video_id if len(cand.video_id) == 11 else rid
-            outp = unique_out_path(out_folder, stem, name_key)
+            outp = remote_save_out_path(out_folder, stem)
 
             jid = new_job_id()
             job = UiJob(
@@ -1012,8 +1010,12 @@ class MainWindow(QWidget):
         ne = self.no_embed_cb.isChecked()
         jid = new_job_id()
         stem = safe_stem(c.title, c.video_id)
-        outp = unique_out_path(out_folder, stem, c.video_id)
         backend = "remote" if self._use_remote else "local"
+        outp = (
+            remote_save_out_path(out_folder, stem)
+            if backend == "remote"
+            else unique_out_path(out_folder, stem, c.video_id)
+        )
         job = UiJob(
             job_id=jid,
             candidate=c,
@@ -1355,6 +1357,22 @@ class MainWindow(QWidget):
         extra = f"{job.download_speed}  {job.download_eta}".strip()
         return detail, prog_txt, extra
 
+    @staticmethod
+    def _convert_queue_sort_key(job: UiJob) -> tuple[int, str]:
+        """Order: Converting, Queued, failed/cancelled, then done (e.g. pending Save to PC)."""
+        st = job.convert_status
+        if st == "converting":
+            group = 0
+        elif st in ("queued", "waiting"):
+            group = 1
+        elif st in ("failed", "cancelled"):
+            group = 2
+        elif st == "done":
+            group = 3
+        else:
+            group = 4
+        return (group, (job.candidate.title or "").lower())
+
     def _convert_status_progress(self, job: UiJob) -> tuple[str, str]:
         if (
             job.backend == "remote"
@@ -1428,6 +1446,7 @@ class MainWindow(QWidget):
                 )
             )
         ]
+        rows.sort(key=self._convert_queue_sort_key)
         self.convert_table.setRowCount(len(rows))
         for i, job in enumerate(rows):
             chk = QTableWidgetItem()
@@ -1474,13 +1493,17 @@ class MainWindow(QWidget):
             and job.convert_status in ("failed", "cancelled", "done")
         )
         restart_btn.clicked.connect(lambda *, jid=job.job_id: self._rerun_convert_for_job(jid))
-        save_btn = QPushButton("Save to PC")
         need_save = (
             job.backend == "remote"
             and job.convert_status == "done"
             and not job.remote_saved_locally
         )
+        overwrite = need_save and job.out_path.is_file()
+        save_label = "ReSave to PC" if overwrite else "Save to PC"
+        save_btn = QPushButton(save_label)
         save_btn.setVisible(need_save)
+        if overwrite:
+            save_btn.setToolTip("A file already exists at this path; saving will overwrite it.")
         save_btn.clicked.connect(lambda *, jid=job.job_id: self._save_remote_to_pc(jid))
         remove_btn = QPushButton("Remove")
         remove_btn.setToolTip("Remove this entry from the queue (cancels an active transcode if needed).")
