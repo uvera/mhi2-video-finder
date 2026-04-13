@@ -12,7 +12,11 @@ From **`deploy/podman/`** after `git pull`:
 ./rebuild-daemon.sh
 ```
 
+(Same script: **`./rebuild-daemons.sh`** if you typed an extra `s`.)
+
 The script runs **`sudo podman-compose`** by default (rootful Podman). For rootless: `USE_SUDO=0 ./rebuild-daemon.sh`.
+
+If healthz still has no `app_version`, the script prints **Diagnostics** (host vs in-container `curl`, `grep` in `/app/src`, `podman ps`). Use that output to see whether the wrong container is bound to the port or the image never picked up new `src/`.
 
 Or manually:
 

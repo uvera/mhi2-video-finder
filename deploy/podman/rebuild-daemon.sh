@@ -15,6 +15,35 @@ compose() {
   fi
 }
 
+pman() {
+  if [[ "$USE_SUDO" == "1" ]]; then
+    sudo podman "$@"
+  else
+    podman "$@"
+  fi
+}
+
+diag() {
+  echo "" >&2
+  echo "========== Diagnostics ==========" >&2
+  echo "Script dir: $(pwd -P)" >&2
+  echo "Host healthz (127.0.0.1:${PORT}): $(curl -sS --connect-timeout 2 "http://127.0.0.1:${PORT}/healthz" 2>/dev/null || echo '(failed)')" >&2
+  echo "--- podman ps (name mhi2-vf) ---" >&2
+  pman ps -a --filter name=mhi2-vf 2>&2 || true
+  echo "--- image for container mhi2-vf ---" >&2
+  pman inspect mhi2-vf --format 'ImageID={{.Image}} Created={{.Created}}' 2>&2 || echo "(no container mhi2-vf)" >&2
+  echo "--- app.py on disk (host) has app_version? ---" >&2
+  grep -n "app_version" ../../src/mhi2_video_finder/daemon/app.py 2>/dev/null | head -3 >&2 \
+    || echo "(no match or wrong cwd — must run from deploy/podman)" >&2
+  echo "--- same check inside container /app/src ---" >&2
+  pman exec mhi2-vf grep -n "app_version" /app/src/mhi2_video_finder/daemon/app.py 2>&2 || echo "(podman exec or grep failed)" >&2
+  echo "--- healthz from INSIDE container (bypasses host port confusion) ---" >&2
+  pman exec mhi2-vf curl -sS --connect-timeout 2 http://127.0.0.1:8765/healthz 2>&2 || echo "(curl inside container failed)" >&2
+  echo "--- NDJSON debug dir in container ---" >&2
+  pman exec mhi2-vf ls -la /var/lib/mhi2-video-finder/debug 2>&2 || true
+  echo "=================================" >&2
+}
+
 if ! command -v podman-compose >/dev/null 2>&1; then
   echo "podman-compose not found on PATH" >&2
   exit 1
@@ -25,7 +54,7 @@ if [[ "$USE_SUDO" == "1" ]] && ! command -v sudo >/dev/null 2>&1; then
 fi
 
 echo "==> compose down (USE_SUDO=$USE_SUDO)"
-compose down
+compose down || echo "Note: compose down exited non-zero (ok if stack was already stopped)." >&2
 
 echo "==> compose build --no-cache"
 compose build --no-cache
@@ -40,17 +69,29 @@ if [[ -f .env ]]; then
 fi
 
 echo "==> Waiting for healthz on port $PORT ..."
-for _ in $(seq 1 30); do
+ok=0
+for _ in $(seq 1 40); do
   if out=$(curl -sS --connect-timeout 1 "http://127.0.0.1:${PORT}/healthz" 2>/dev/null); then
     echo "$out"
     if echo "$out" | grep -q app_version; then
-      echo "OK: healthz includes app_version (container matches current image)."
-      exit 0
+      echo "OK: healthz includes app_version."
+      ok=1
+      break
     fi
-    echo "WARN: healthz responded but has no app_version — wrong image or old layer." >&2
+    echo "WARN: healthz replied but no app_version: $out" >&2
+    diag
     exit 1
   fi
   sleep 1
 done
-echo "ERROR: healthz did not become ready." >&2
-exit 1
+
+if [[ "$ok" != "1" ]]; then
+  echo "ERROR: healthz did not become ready on port $PORT." >&2
+  diag
+  exit 1
+fi
+
+echo "==> Optional: in-container healthz"
+pman exec mhi2-vf curl -sS http://127.0.0.1:8765/healthz || true
+echo ""
+exit 0
