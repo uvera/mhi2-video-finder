@@ -1574,13 +1574,13 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(clear_guess_btn)
         self.library_bulk_infer_btn = QPushButton("Guess selected")
         self.library_bulk_infer_btn.setToolTip(
-            "Run AI guessing for all checked rows, one by one."
+            "Run AI guessing for all checked rows, one by one. Tags are saved to each file after each guess."
         )
         self.library_bulk_infer_btn.clicked.connect(self._library_infer_checked_groq)
         btn_row.addWidget(self.library_bulk_infer_btn)
         self.library_infer_btn = QPushButton("Guess artist & song")
         self.library_infer_btn.setToolTip(
-            "Fill Artist and Song using Groq from the file name and media info. "
+            "Fill Artist and Song using Groq from the file name and media info, then save tags to the file. "
             "Add your API key under Settings → AI assistant."
         )
         self.library_infer_btn.clicked.connect(self._library_infer_groq)
@@ -1597,8 +1597,8 @@ class MainWindow(QMainWindow):
 
         lib_hint = QLabel(
             "Pick a folder and choose Find all videos. Click a row to load details, then edit by hand, "
-            "guess one row, or check multiple rows and use Guess selected. Configure the AI under "
-            "Settings → AI assistant (or set GROQ_API_KEY)."
+            "or use Guess artist & song / Guess selected — inferred tags are written to each file right away "
+            "(same as Save). Configure the AI under Settings → AI assistant (or set GROQ_API_KEY)."
         )
         lib_hint.setWordWrap(True)
         lib_hint.setStyleSheet("color: palette(mid);")
@@ -1905,11 +1905,20 @@ class MainWindow(QMainWindow):
             a_item.setText(row.author)
         if s_item is not None:
             s_item.setText(row.song_name)
+        new_path, save_err = self._library_save_row(r, show_errors=True)
+        if new_path is None:
+            self._library_set_guess_status(r, "Save failed", tooltip=save_err)
+            self._library_infer_done += 1
+            return
         bits = [x for x in (row.author, row.song_name) if x]
         if bits:
-            self._library_set_guess_status(r, "Guessed")
+            self._library_set_guess_status(r, "Saved")
         else:
-            self._library_set_guess_status(r, "None", tooltip="AI was not sure.")
+            self._library_set_guess_status(
+                r,
+                "Saved",
+                tooltip="AI returned empty artist/title; file was updated anyway.",
+            )
         self._library_infer_done += 1
 
     def _library_on_infer_fail(self, err: str) -> None:
@@ -1919,24 +1928,25 @@ class MainWindow(QMainWindow):
         self._library_infer_done += 1
         self._show_status_message(err.strip() or "Could not reach the AI.", kind="error")
 
-    def _library_apply_changes(self) -> None:
+    def _library_save_row(self, r: int, *, show_errors: bool = True) -> tuple[Path | None, str]:
+        """Write tags + optional rename for library row ``r``. Returns ``(path, \"\")`` or ``(None, error)``."""
         self._sync_widgets_to_settings()
-        r = self._library_current_row_index()
-        if r < 0:
-            self._show_status_message("Select a video in the list first.", kind="info")
-            return
+        if r < 0 or r >= len(self._library_rows):
+            msg = "Invalid row."
+            if show_errors:
+                self._show_status_message(msg, kind="error")
+            return None, msg
         row = self._library_rows[r]
-        row.author = self.ui_lib_author.text().strip()
-        row.song_name = self.ui_lib_song.text().strip()
-        row.filename_stem = self.ui_lib_stem.text().strip()
+        if self.library_table.currentRow() == r:
+            row.author = self.ui_lib_author.text().strip()
+            row.song_name = self.ui_lib_song.text().strip()
+            row.filename_stem = self.ui_lib_stem.text().strip()
         path = row.path
         if not path.is_file():
-            self._show_status_message(
-                "That file isn’t there anymore — try scanning the folder again.",
-                kind="error",
-            )
-            return
-        self._status.setText("Saving…")
+            msg = "That file isn’t there anymore — try scanning the folder again."
+            if show_errors:
+                self._show_status_message(msg, kind="error")
+            return None, msg
         try:
             new_path = apply_author_song_and_filename(
                 path,
@@ -1947,9 +1957,10 @@ class MainWindow(QMainWindow):
                 settings_cpu_limit=self._settings.ffmpeg_cpu_limit_percent,
             )
         except Exception as e:
-            self._status.setText("")
-            self._show_status_message(str(e).strip() or "Could not save the file.", kind="error")
-            return
+            msg = str(e).strip() or "Could not save the file."
+            if show_errors:
+                self._show_status_message(msg, kind="error")
+            return None, msg
         row.path = new_path
         row.filename_stem = new_path.stem
         it0 = self.library_table.item(r, _LIB_COL_FILE)
@@ -1964,19 +1975,32 @@ class MainWindow(QMainWindow):
                 rel = new_path.name
             it0.setText(rel)
             it0.setToolTip(str(new_path))
-        self._library_block_edit_signals = True
-        try:
-            self.ui_lib_stem.setText(row.filename_stem)
-        finally:
-            self._library_block_edit_signals = False
+        if self.library_table.currentRow() == r:
+            self._library_block_edit_signals = True
+            try:
+                self.ui_lib_stem.setText(row.filename_stem)
+            finally:
+                self._library_block_edit_signals = False
         it_a = self.library_table.item(r, _LIB_COL_ARTIST)
         it_s = self.library_table.item(r, _LIB_COL_SONG)
         if it_a is not None:
             it_a.setText(row.author)
         if it_s is not None:
             it_s.setText(row.song_name)
-        self._show_status_message(f"All set — saved “{new_path.name}”.", kind="success")
-        self._status.setText("")
+        return new_path, ""
+
+    def _library_apply_changes(self) -> None:
+        r = self._library_current_row_index()
+        if r < 0:
+            self._show_status_message("Select a video in the list first.", kind="info")
+            return
+        self._status.setText("Saving…")
+        try:
+            new_path, _ = self._library_save_row(r, show_errors=True)
+            if new_path is not None:
+                self._show_status_message(f"All set — saved “{new_path.name}”.", kind="success")
+        finally:
+            self._status.setText("")
 
     @staticmethod
     def _row_index_for_job_id(table: QTableWidget, job_id: str) -> int:
