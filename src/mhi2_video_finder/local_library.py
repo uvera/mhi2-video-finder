@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Temp files created during metadata remux (`apply_metadata_inplace`); keep in sync with local_tags.
+METADATA_REMUX_TEMP_PREFIX = ".vf-meta-"
+
 # Common container extensions; user may add more later.
 VIDEO_EXTENSIONS: frozenset[str] = frozenset(
     {
@@ -47,7 +50,10 @@ def iter_video_files_recursive(root: Path) -> list[Path]:
         return []
     out: list[Path] = []
     for p in root.rglob("*"):
-        if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS:
-            out.append(p)
+        if not p.is_file() or p.suffix.lower() not in VIDEO_EXTENSIONS:
+            continue
+        if p.name.startswith(METADATA_REMUX_TEMP_PREFIX):
+            continue
+        out.append(p)
     out.sort(key=lambda x: str(x).lower())
     return out

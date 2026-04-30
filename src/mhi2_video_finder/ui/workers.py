@@ -337,6 +337,36 @@ class ConvertService(QObject):
         self._executor.shutdown(wait=True, cancel_futures=True)
 
 
+class LibraryScanWorker(QThread):
+    """Recursive folder walk off the GUI thread (Library » Find all videos)."""
+
+    finished_ok = pyqtSignal(list)
+    failed = pyqtSignal(str)
+
+    def __init__(self, root: Path, parent=None) -> None:
+        super().__init__(parent)
+        self._root = root
+
+    def run(self) -> None:
+        try:
+            from mhi2_video_finder.local_library import iter_video_files_recursive
+
+            if self.isInterruptionRequested():
+                return
+            paths = iter_video_files_recursive(self._root)
+            resolved_strs: list[str] = []
+            for p in paths:
+                try:
+                    resolved_strs.append(str(p.resolve()))
+                except OSError:
+                    resolved_strs.append(str(p))
+            self.finished_ok.emit(resolved_strs)
+        except Exception as e:
+            if self.isInterruptionRequested():
+                return
+            self.failed.emit(str(e).strip() or "Could not scan folder.")
+
+
 class LibraryProbeWorker(QThread):
     """ffprobe in background for Library tab selection."""
 
@@ -375,33 +405,120 @@ class LibraryProbeWorker(QThread):
             self.failed.emit(self._row_idx, str(e))
 
 
+class LibrarySaveWorker(QThread):
+    """Remux metadata / rename on a background thread (ffmpeg must not block the UI)."""
+
+    finished_ok = pyqtSignal(int, object)
+    failed = pyqtSignal(int, str)
+
+    def __init__(
+        self,
+        row_idx: int,
+        settings: Settings,
+        path: Path,
+        author: str,
+        song_name: str,
+        filename_stem: str,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._row_idx = row_idx
+        self._settings = settings
+        self._path = path
+        self._author = author
+        self._song_name = song_name
+        self._filename_stem = filename_stem
+
+    def run(self) -> None:
+        try:
+            from mhi2_video_finder.local_tags import apply_author_song_and_filename
+
+            if self.isInterruptionRequested():
+                return
+            new_path = apply_author_song_and_filename(
+                self._path,
+                author=self._author,
+                song_name=self._song_name,
+                filename_stem=self._filename_stem,
+                settings_nice=self._settings.ffmpeg_nice,
+                settings_cpu_limit=self._settings.ffmpeg_cpu_limit_percent,
+            )
+            self.finished_ok.emit(self._row_idx, new_path)
+        except Exception as e:
+            if self.isInterruptionRequested():
+                return
+            self.failed.emit(
+                self._row_idx,
+                str(e).strip() or "Could not save the file.",
+            )
+
+
 class GroqInferWorker(QThread):
+    """Background ffprobe (when needed) + Groq inference — never block the GUI thread."""
+
     finished_ok = pyqtSignal(str, str)
     failed = pyqtSignal(str)
+    probe_cached = pyqtSignal(int, str)
+    skipped = pyqtSignal(int, str)
 
     def __init__(
         self,
         settings: Settings,
         *,
+        row_idx: int,
         filename: str,
+        path: Path | None,
         probe_summary: str,
+        skip_if_existing_tags: bool = False,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._settings = settings
+        self._row_idx = row_idx
         self._filename = filename
-        self._probe_summary = probe_summary
+        self._path = path
+        self._probe_summary = (probe_summary or "").strip()
+        self._skip_if_existing_tags = skip_if_existing_tags
 
     def run(self) -> None:
         try:
+            from mhi2_video_finder.ffprobe_util import (
+                ffprobe_json,
+                format_tags_from_probe,
+                summarize_probe,
+            )
             from mhi2_video_finder.groq_infer import GroqInferenceError, infer_author_song
 
             if self.isInterruptionRequested():
                 return
+
+            summary = self._probe_summary
+            need_probe_json = self._skip_if_existing_tags or not summary
+
+            if need_probe_json:
+                if self._path is None:
+                    self.failed.emit("No media summary and no file path for ffprobe.")
+                    return
+                try:
+                    data = ffprobe_json(self._path)
+                except Exception as e:
+                    self.failed.emit(str(e))
+                    return
+                artist_tag, title_tag = format_tags_from_probe(data)
+                if self._skip_if_existing_tags and artist_tag.strip() and title_tag.strip():
+                    self.skipped.emit(
+                        self._row_idx,
+                        "Already has artist and title in the file.",
+                    )
+                    return
+                if not summary:
+                    summary = summarize_probe(data)
+                    self.probe_cached.emit(self._row_idx, summary)
+
             author, song = infer_author_song(
                 self._settings,
                 filename=self._filename,
-                probe_summary=self._probe_summary,
+                probe_summary=summary,
             )
             self.finished_ok.emit(author, song)
         except GroqInferenceError as e:

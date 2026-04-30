@@ -41,7 +41,14 @@ def _fps_to_str(val: Any) -> str:
 def _coerce_field(name: str, raw: str) -> Any:
     if name == "fps":
         return raw.strip()
-    if name in ("embed_metadata", "embed_album_art", "vaapi_cbr", "remote_auto_download", "groq_enabled"):
+    if name in (
+        "embed_metadata",
+        "embed_album_art",
+        "vaapi_cbr",
+        "remote_auto_download",
+        "groq_enabled",
+        "library_skip_bulk_infer_if_tagged",
+    ):
         return raw.strip().lower() in ("1", "true", "yes", "on")
     if name in (
         "max_width",
@@ -131,6 +138,8 @@ class Settings:
     remote_auto_download: bool = False
     # Local Library tab: last browsed folder (optional).
     library_last_folder: Path | None = None
+    # Guess selected: skip files that already have non-empty artist + title tags (ffprobe).
+    library_skip_bulk_infer_if_tagged: bool = False
     # Groq (OpenAI-compatible) for metadata inference.
     groq_enabled: bool = False
     groq_api_key: str | None = None
@@ -184,6 +193,7 @@ def load_settings(path: Path | None = None) -> Settings:
             "vaapi_cbr",
             "remote_auto_download",
             "groq_enabled",
+            "library_skip_bulk_infer_if_tagged",
         ) and isinstance(val, str):
             val = val.strip().lower() in ("1", "true", "yes", "on")
         if name == "groq_temperature" and isinstance(val, int | float):

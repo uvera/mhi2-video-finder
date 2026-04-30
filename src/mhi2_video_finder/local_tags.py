@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 from mhi2_video_finder.ffmpeg_progress import prepare_ffmpeg_subprocess_argv
+from mhi2_video_finder.local_library import METADATA_REMUX_TEMP_PREFIX
 from mhi2_video_finder.metadata import MediaTags
 from mhi2_video_finder.workflow import safe_stem
 
@@ -95,7 +96,7 @@ def apply_metadata_inplace(
     """Rewrite metadata in-place via a temp file in the same directory."""
     path = path.expanduser().resolve()
     parent = path.parent
-    fd, tmp_name = tempfile.mkstemp(suffix=path.suffix, prefix=".vf-meta-", dir=str(parent))
+    fd, tmp_name = tempfile.mkstemp(suffix=path.suffix, prefix=METADATA_REMUX_TEMP_PREFIX, dir=str(parent))
     os.close(fd)
     tmp = Path(tmp_name)
     try:

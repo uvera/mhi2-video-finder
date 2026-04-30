@@ -44,8 +44,7 @@ from mhi2_video_finder import __version__
 from mhi2_video_finder.config import Settings, default_config_path, load_settings, save_settings
 from mhi2_video_finder.paste_urls import parse_pasted_video_urls
 from mhi2_video_finder.search import VideoCandidate
-from mhi2_video_finder.local_library import LibraryFileRow, iter_video_files_recursive
-from mhi2_video_finder.local_tags import apply_author_song_and_filename
+from mhi2_video_finder.local_library import LibraryFileRow
 from mhi2_video_finder.workflow import (
     ensure_output_dir,
     infer_subdir_name,
@@ -71,6 +70,8 @@ from .workers import (
     DownloadService,
     GroqInferWorker,
     LibraryProbeWorker,
+    LibrarySaveWorker,
+    LibraryScanWorker,
     SearchWorker,
     new_job_id,
 )
@@ -87,6 +88,10 @@ _LIB_COL_FILE = 1
 _LIB_COL_ARTIST = 2
 _LIB_COL_SONG = 3
 _LIB_COL_GUESS_STATUS = 4
+# Table rows inserted per event-loop slice so Find-all-videos stays responsive.
+_LIBRARY_TABLE_FILL_BATCH_ROWS = 100
+# Concurrent Groq requests while earlier rows may still be saving (ffmpeg).
+_MAX_PARALLEL_LIBRARY_GROQ = 3
 
 
 def _display_title_for_remote_row(raw_title: str) -> str:
@@ -159,11 +164,13 @@ class MainWindow(QMainWindow):
         self._library_populating_table = False
         self._library_block_edit_signals = False
         self._library_probe_worker: LibraryProbeWorker | None = None
-        self._library_infer_worker: GroqInferWorker | None = None
-        self._library_infer_queue: list[int] = []
-        self._library_infer_active_row: int | None = None
+        self._library_infer_pending: list[int] = []
+        self._library_infer_groq_slots_busy: int = 0
         self._library_infer_total: int = 0
         self._library_infer_done: int = 0
+        self._library_infer_skip_if_tagged: bool = False
+        self._library_apply_save_worker: LibrarySaveWorker | None = None
+        self._library_scan_worker: LibraryScanWorker | None = None
 
         self._status_message_timer = QTimer(self)
         self._status_message_timer.setSingleShot(True)
@@ -745,6 +752,11 @@ class MainWindow(QMainWindow):
         self.ui_groq_base_url.setText((self._settings.groq_base_url or "").strip())
         self.ui_groq_temperature.setValue(float(self._settings.groq_temperature))
 
+        if hasattr(self, "library_skip_tagged_cb"):
+            self.library_skip_tagged_cb.blockSignals(True)
+            self.library_skip_tagged_cb.setChecked(self._settings.library_skip_bulk_infer_if_tagged)
+            self.library_skip_tagged_cb.blockSignals(False)
+
     def _sync_widgets_to_settings(self) -> None:
         pb = self.ui_processing_backend.currentData()
         self._settings.processing_backend = pb if pb in ("local", "remote") else "local"
@@ -777,6 +789,9 @@ class MainWindow(QMainWindow):
         self._settings.groq_model = self.ui_groq_model.text().strip() or "llama-3.1-8b-instant"
         self._settings.groq_base_url = self.ui_groq_base_url.text().strip() or "https://api.groq.com/openai/v1"
         self._settings.groq_temperature = float(self.ui_groq_temperature.value())
+
+        if hasattr(self, "library_skip_tagged_cb"):
+            self._settings.library_skip_bulk_infer_if_tagged = self.library_skip_tagged_cb.isChecked()
 
     def _update_vaapi_options_visibility(self) -> None:
         data = self.ui_video_encoder.currentData()
@@ -1519,10 +1534,10 @@ class MainWindow(QMainWindow):
         br.clicked.connect(self._browse_library_folder)
         top.addWidget(self.ui_library_folder, stretch=1)
         top.addWidget(br)
-        scan_btn = QPushButton("Find all videos")
-        scan_btn.setToolTip("Discover every video file under this folder, including nested folders.")
-        scan_btn.clicked.connect(self._library_scan)
-        top.addWidget(scan_btn)
+        self.library_scan_btn = QPushButton("Find all videos")
+        self.library_scan_btn.setToolTip("Discover every video file under this folder, including nested folders.")
+        self.library_scan_btn.clicked.connect(self._library_scan)
+        top.addWidget(self.library_scan_btn)
         lay.addLayout(top)
 
         self.library_table = QTableWidget(0, 5)
@@ -1574,7 +1589,8 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(clear_guess_btn)
         self.library_bulk_infer_btn = QPushButton("Guess selected")
         self.library_bulk_infer_btn.setToolTip(
-            "Run AI guessing for all checked rows, one by one. Tags are saved to each file after each guess."
+            "Run AI on checked rows with up to 3 Groq requests at a time; ffprobe and saving stay off the UI "
+            "thread so the window stays responsive."
         )
         self.library_bulk_infer_btn.clicked.connect(self._library_infer_checked_groq)
         btn_row.addWidget(self.library_bulk_infer_btn)
@@ -1594,6 +1610,20 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self.library_apply_btn)
         btn_row.addStretch()
         lay.addLayout(btn_row)
+
+        bulk_opts = QHBoxLayout()
+        self.library_skip_tagged_cb = QCheckBox(
+            "Skip files that already have artist & title tags (Guess selected only)"
+        )
+        self.library_skip_tagged_cb.setToolTip(
+            "Uses ffprobe: if both artist and title exist in the file’s metadata, that row is skipped "
+            "(AI status shows Skipped). Single-row “Guess artist & song” always runs."
+        )
+        self.library_skip_tagged_cb.setChecked(self._settings.library_skip_bulk_infer_if_tagged)
+        self.library_skip_tagged_cb.toggled.connect(self._library_on_skip_tagged_toggled)
+        bulk_opts.addWidget(self.library_skip_tagged_cb)
+        bulk_opts.addStretch()
+        lay.addLayout(bulk_opts)
 
         lib_hint = QLabel(
             "Pick a folder and choose Find all videos. Click a row to load details, then edit by hand, "
@@ -1634,45 +1664,86 @@ class MainWindow(QMainWindow):
                 kind="error",
             )
             return
+        if self._library_scan_worker is not None and self._library_scan_worker.isRunning():
+            self._show_status_message("Already scanning — please wait.", kind="info")
+            return
         self._sync_widgets_to_settings()
         self._settings.library_last_folder = root
-        paths = iter_video_files_recursive(root)
         self._library_root = root
-        self._library_rows = [LibraryFileRow(p) for p in paths]
-        self._library_fill_table()
-        n = len(paths)
-        self._status.setText(f"Library: {n} video(s) in {root.name}")
-        self._show_status_message(
-            f"Found {n} video{'s' if n != 1 else ''} in this folder.",
-            kind="success",
-        )
+        self._status.setText(f"Scanning folder… ({root.name})")
+        self.library_scan_btn.setEnabled(False)
+        w = LibraryScanWorker(root, parent=self)
+        self._library_scan_worker = w
+        w.finished_ok.connect(self._library_on_scan_finished)
+        w.failed.connect(self._library_on_scan_failed)
+        w.finished.connect(self._library_on_scan_worker_finished)
+        w.start()
 
-    def _library_fill_table(self) -> None:
+    def _library_on_scan_worker_finished(self) -> None:
+        self._library_scan_worker = None
+
+    def _library_on_scan_failed(self, err: str) -> None:
+        self._status.setText("")
+        self.library_scan_btn.setEnabled(True)
+        self._show_status_message(err, kind="error")
+
+    def _library_on_scan_finished(self, paths_as_strs: object) -> None:
+        root = self._library_root
+        if not isinstance(paths_as_strs, list):
+            self.library_scan_btn.setEnabled(True)
+            self._show_status_message("Scan returned unexpected data.", kind="error")
+            return
+        paths = [Path(str(s)) for s in paths_as_strs]
+        n = len(paths)
+        self._library_rows = [LibraryFileRow(p) for p in paths]
+        self._status.setText(f"Building table… ({n} video{'s' if n != 1 else ''})")
+        self._library_fill_table_batched(0)
+
+    def _library_fill_table_batched(self, start_idx: int = 0) -> None:
+        batch = _LIBRARY_TABLE_FILL_BATCH_ROWS
         self._library_populating_table = True
-        try:
-            self.library_table.setRowCount(len(self._library_rows))
-            root = self._library_root
-            for i, row in enumerate(self._library_rows):
-                chk = QTableWidgetItem()
-                chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
-                chk.setCheckState(Qt.CheckState.Unchecked)
-                self.library_table.setItem(i, _LIB_COL_CHECK, chk)
-                if root is not None:
-                    try:
-                        rel = str(row.path.resolve().relative_to(root.resolve()))
-                    except ValueError:
-                        rel = row.path.name
-                else:
-                    rel = str(row.path)
-                it0 = QTableWidgetItem(rel)
-                it0.setData(Qt.ItemDataRole.UserRole, str(row.path))
-                it0.setToolTip(str(row.path))
-                self.library_table.setItem(i, _LIB_COL_FILE, it0)
-                self.library_table.setItem(i, _LIB_COL_ARTIST, QTableWidgetItem(row.author))
-                self.library_table.setItem(i, _LIB_COL_SONG, QTableWidgetItem(row.song_name))
-                self.library_table.setItem(i, _LIB_COL_GUESS_STATUS, QTableWidgetItem(row.ai_guess_status))
-        finally:
+        n = len(self._library_rows)
+        if start_idx == 0:
+            self.library_table.setRowCount(n)
+            self._library_table_root_res = (
+                self._library_root.resolve() if self._library_root is not None else None
+            )
+        root_resolved = getattr(self, "_library_table_root_res", None)
+        end = min(start_idx + batch, n)
+        for i in range(start_idx, end):
+            row = self._library_rows[i]
+            chk = QTableWidgetItem()
+            chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            chk.setCheckState(Qt.CheckState.Unchecked)
+            self.library_table.setItem(i, _LIB_COL_CHECK, chk)
+            if root_resolved is not None:
+                try:
+                    rel = str(row.path.relative_to(root_resolved))
+                except ValueError:
+                    rel = row.path.name
+            else:
+                rel = str(row.path)
+            it0 = QTableWidgetItem(rel)
+            it0.setData(Qt.ItemDataRole.UserRole, str(row.path))
+            it0.setToolTip(str(row.path))
+            self.library_table.setItem(i, _LIB_COL_FILE, it0)
+            self.library_table.setItem(i, _LIB_COL_ARTIST, QTableWidgetItem(row.author))
+            self.library_table.setItem(i, _LIB_COL_SONG, QTableWidgetItem(row.song_name))
+            self.library_table.setItem(i, _LIB_COL_GUESS_STATUS, QTableWidgetItem(row.ai_guess_status))
+        if end < n:
+            QTimer.singleShot(0, lambda e=end: self._library_fill_table_batched(e))
+        else:
             self._library_populating_table = False
+            self.library_scan_btn.setEnabled(True)
+            lib_root = self._library_root
+            if lib_root is not None:
+                self._status.setText(f"Library: {n} video(s) in {lib_root.name}")
+                self._show_status_message(
+                    f"Found {n} video{'s' if n != 1 else ''} in this folder.",
+                    kind="success",
+                )
+            else:
+                self._status.setText("")
 
     def _library_checked_row_indices(self) -> list[int]:
         out: list[int] = []
@@ -1794,21 +1865,34 @@ class MainWindow(QMainWindow):
         if s_item is not None:
             s_item.setText(row.song_name)
 
+    def _library_on_skip_tagged_toggled(self, _checked: bool) -> None:
+        self._sync_widgets_to_settings()
+        try:
+            save_settings(self._settings, self._config_path)
+        except OSError:
+            pass
+
     def _library_infer_groq(self) -> None:
         r = self._library_current_row_index()
         if r < 0:
             self._show_status_message("Select a video in the list first.", kind="info")
             return
-        self._library_start_infer_queue([r])
+        self._library_start_infer_queue([r], skip_if_tagged=False)
 
     def _library_infer_checked_groq(self) -> None:
         checked = self._library_checked_row_indices()
         if not checked:
             self._show_status_message("Check one or more rows first.", kind="info")
             return
-        self._library_start_infer_queue(checked)
+        self._library_start_infer_queue(
+            checked,
+            skip_if_tagged=self.library_skip_tagged_cb.isChecked(),
+        )
 
-    def _library_start_infer_queue(self, row_indices: list[int]) -> None:
+    def _library_infer_batch_in_progress(self) -> bool:
+        return self._library_infer_total > 0 and self._library_infer_done < self._library_infer_total
+
+    def _library_start_infer_queue(self, row_indices: list[int], *, skip_if_tagged: bool = False) -> None:
         self._sync_widgets_to_settings()
         key = (self._settings.groq_api_key or "").strip()
         if not key:
@@ -1817,75 +1901,77 @@ class MainWindow(QMainWindow):
                 kind="info",
             )
             return
-        if self._library_infer_worker is not None or self._library_infer_queue:
+        if self._library_infer_batch_in_progress():
             self._show_status_message("Already asking the AI — one moment.", kind="info")
             return
         valid = [i for i in row_indices if 0 <= i < len(self._library_rows)]
         if not valid:
             self._show_status_message("Nothing to guess right now.", kind="info")
             return
-        self._library_infer_queue = valid
+        self._library_infer_skip_if_tagged = skip_if_tagged
+        self._library_infer_pending = valid
         self._library_infer_total = len(valid)
         self._library_infer_done = 0
-        self._library_run_next_infer()
+        self._library_try_start_more_groq_infers()
 
-    def _library_run_next_infer(self) -> None:
-        if self._library_infer_worker is not None:
+    def _library_refresh_infer_status_line(self) -> None:
+        if self._library_infer_total <= 0:
             return
-        if not self._library_infer_queue:
-            if self._library_infer_total > 0:
-                self._show_status_message(
-                    f"AI guessing complete ({self._library_infer_done}/{self._library_infer_total}).",
-                    kind="success",
-                )
-            self._status.setText("")
-            self._library_infer_active_row = None
-            self._library_infer_total = 0
-            self._library_infer_done = 0
-            return
-        row_idx = self._library_infer_queue.pop(0)
-        self._library_infer_active_row = row_idx
-        row = self._library_rows[row_idx]
-        if not row.probe_summary:
-            try:
-                from mhi2_video_finder.ffprobe_util import ffprobe_json, summarize_probe
-
-                data = ffprobe_json(row.path)
-                row.probe_summary = summarize_probe(data)
-            except Exception as e:
-                self._library_set_guess_status(row_idx, "Failed", tooltip=str(e))
-                self._library_infer_done += 1
-                self._show_status_message(
-                    f"Skipped {row.path.name}: could not read media info.",
-                    kind="error",
-                )
-                self._library_run_next_infer()
-                return
-        self._library_set_guess_status(row_idx, "Guessing")
-        step = self._library_infer_done + 1
         self._status.setText(
-            f"Asking Groq… ({step}/{self._library_infer_total}) {row.path.name}"
+            f"Library AI… Groq {self._library_infer_groq_slots_busy} active, "
+            f"{len(self._library_infer_pending)} queued • "
+            f"{self._library_infer_done}/{self._library_infer_total} finished"
         )
+
+    def _library_try_start_more_groq_infers(self) -> None:
+        while (
+            self._library_infer_groq_slots_busy < _MAX_PARALLEL_LIBRARY_GROQ
+            and self._library_infer_pending
+        ):
+            row_idx = self._library_infer_pending.pop(0)
+            self._library_start_groq_for_row(row_idx)
+
+    def _library_bump_infer_batch_progress(self) -> None:
+        """One library row finished the infer pipeline (probe skip, Groq fail, or save done)."""
+        if self._library_infer_total <= 0:
+            return
+        self._library_infer_done += 1
+        self._library_refresh_infer_status_line()
+        self._library_finish_infer_batch_if_complete()
+
+    def _library_on_groq_probe_cached(self, row_idx: int, summary: str) -> None:
+        if 0 <= row_idx < len(self._library_rows):
+            self._library_rows[row_idx].probe_summary = summary
+
+    def _library_start_groq_for_row(self, row_idx: int) -> None:
+        row = self._library_rows[row_idx]
+        self._library_set_guess_status(row_idx, "Guessing")
+        self._library_infer_groq_slots_busy += 1
+        self._library_refresh_infer_status_line()
         w = GroqInferWorker(
             self._settings,
+            row_idx=row_idx,
             filename=row.path.name,
-            probe_summary=row.probe_summary,
+            path=row.path,
+            probe_summary=row.probe_summary or "",
+            skip_if_existing_tags=self._library_infer_skip_if_tagged,
             parent=self,
         )
-        self._library_infer_worker = w
-        w.finished_ok.connect(self._library_on_infer_ok)
-        w.failed.connect(self._library_on_infer_fail)
-        w.finished.connect(self._library_infer_finished_cleanup)
+        w.probe_cached.connect(self._library_on_groq_probe_cached)
+        w.skipped.connect(self._library_on_parallel_infer_skipped)
+        w.finished_ok.connect(partial(self._library_on_parallel_infer_ok, row_idx))
+        w.failed.connect(partial(self._library_on_parallel_infer_fail, row_idx))
+        w.finished.connect(self._library_on_parallel_groq_thread_finished)
         w.start()
 
-    def _library_infer_finished_cleanup(self) -> None:
-        self._library_infer_worker = None
-        self._library_infer_active_row = None
-        self._library_run_next_infer()
+    def _library_on_parallel_groq_thread_finished(self) -> None:
+        self._library_infer_groq_slots_busy = max(0, self._library_infer_groq_slots_busy - 1)
+        self._library_refresh_infer_status_line()
+        self._library_try_start_more_groq_infers()
 
-    def _library_on_infer_ok(self, author: str, song: str) -> None:
-        r = self._library_infer_active_row
-        if r is None or r < 0 or r >= len(self._library_rows):
+    def _library_on_parallel_infer_ok(self, row_idx: int, author: str, song: str) -> None:
+        r = row_idx
+        if r < 0 or r >= len(self._library_rows):
             return
         row = self._library_rows[r]
         if author:
@@ -1905,37 +1991,66 @@ class MainWindow(QMainWindow):
             a_item.setText(row.author)
         if s_item is not None:
             s_item.setText(row.song_name)
-        new_path, save_err = self._library_save_row(r, show_errors=True)
-        if new_path is None:
-            self._library_set_guess_status(r, "Save failed", tooltip=save_err)
-            self._library_infer_done += 1
+        payload = self._library_prepare_save_payload(r, show_errors=True)
+        if payload is None:
+            self._library_set_guess_status(r, "Save failed", tooltip="Could not read row or file is missing.")
+            self._library_bump_infer_batch_progress()
             return
-        bits = [x for x in (row.author, row.song_name) if x]
-        if bits:
-            self._library_set_guess_status(r, "Saved")
-        else:
-            self._library_set_guess_status(
-                r,
-                "Saved",
-                tooltip="AI returned empty artist/title; file was updated anyway.",
-            )
-        self._library_infer_done += 1
+        path, art, song_name, stem = payload
+        self._library_refresh_infer_status_line()
+        self._library_set_guess_status(
+            r,
+            "Saving",
+            tooltip="Writing tags to the file (stream copy — no re-encode).",
+        )
+        sw = LibrarySaveWorker(
+            r,
+            self._settings,
+            path,
+            art,
+            song_name,
+            stem,
+            parent=self,
+        )
+        sw.finished_ok.connect(self._library_on_infer_save_ok)
+        sw.failed.connect(self._library_on_infer_save_fail)
+        sw.finished.connect(sw.deleteLater)
+        sw.start()
 
-    def _library_on_infer_fail(self, err: str) -> None:
-        r = self._library_infer_active_row
-        if r is not None:
-            self._library_set_guess_status(r, "Failed", tooltip=err.strip())
-        self._library_infer_done += 1
+    def _library_on_parallel_infer_fail(self, row_idx: int, err: str) -> None:
+        self._library_set_guess_status(row_idx, "Failed", tooltip=err.strip())
         self._show_status_message(err.strip() or "Could not reach the AI.", kind="error")
+        self._library_bump_infer_batch_progress()
 
-    def _library_save_row(self, r: int, *, show_errors: bool = True) -> tuple[Path | None, str]:
-        """Write tags + optional rename for library row ``r``. Returns ``(path, \"\")`` or ``(None, error)``."""
+    def _library_on_parallel_infer_skipped(self, row_idx: int, reason: str) -> None:
+        self._library_set_guess_status(row_idx, "Skipped", tooltip=reason.strip())
+        self._library_bump_infer_batch_progress()
+
+    def _library_finish_infer_batch_if_complete(self) -> None:
+        if self._library_infer_total <= 0:
+            return
+        if self._library_infer_done < self._library_infer_total:
+            return
+        self._show_status_message(
+            f"AI guessing complete ({self._library_infer_done}/{self._library_infer_total}).",
+            kind="success",
+        )
+        self._status.setText("")
+        self._library_infer_total = 0
+        self._library_infer_done = 0
+        self._library_infer_pending.clear()
+        self._library_infer_skip_if_tagged = False
+
+    def _library_prepare_save_payload(
+        self, r: int, *, show_errors: bool
+    ) -> tuple[Path, str, str, str] | None:
+        """Gather path and tag fields on the main thread before starting ``LibrarySaveWorker``."""
         self._sync_widgets_to_settings()
         if r < 0 or r >= len(self._library_rows):
             msg = "Invalid row."
             if show_errors:
                 self._show_status_message(msg, kind="error")
-            return None, msg
+            return None
         row = self._library_rows[r]
         if self.library_table.currentRow() == r:
             row.author = self.ui_lib_author.text().strip()
@@ -1946,21 +2061,11 @@ class MainWindow(QMainWindow):
             msg = "That file isn’t there anymore — try scanning the folder again."
             if show_errors:
                 self._show_status_message(msg, kind="error")
-            return None, msg
-        try:
-            new_path = apply_author_song_and_filename(
-                path,
-                author=row.author,
-                song_name=row.song_name,
-                filename_stem=row.filename_stem,
-                settings_nice=self._settings.ffmpeg_nice,
-                settings_cpu_limit=self._settings.ffmpeg_cpu_limit_percent,
-            )
-        except Exception as e:
-            msg = str(e).strip() or "Could not save the file."
-            if show_errors:
-                self._show_status_message(msg, kind="error")
-            return None, msg
+            return None
+        return path, row.author, row.song_name, row.filename_stem
+
+    def _library_apply_saved_path_to_ui(self, r: int, new_path: Path) -> None:
+        row = self._library_rows[r]
         row.path = new_path
         row.filename_stem = new_path.stem
         it0 = self.library_table.item(r, _LIB_COL_FILE)
@@ -1987,20 +2092,76 @@ class MainWindow(QMainWindow):
             it_a.setText(row.author)
         if it_s is not None:
             it_s.setText(row.song_name)
-        return new_path, ""
+
+    def _library_on_infer_save_ok(self, r: int, new_path_obj: object) -> None:
+        new_path = new_path_obj if isinstance(new_path_obj, Path) else Path(new_path_obj)
+        self._library_apply_saved_path_to_ui(r, new_path)
+        bits = [x for x in (self._library_rows[r].author, self._library_rows[r].song_name) if x]
+        if bits:
+            self._library_set_guess_status(r, "Saved")
+        else:
+            self._library_set_guess_status(
+                r,
+                "Saved",
+                tooltip="AI returned empty artist/title; file was updated anyway.",
+            )
+        self._library_bump_infer_batch_progress()
+
+    def _library_on_infer_save_fail(self, r: int, err: str) -> None:
+        self._library_set_guess_status(r, "Save failed", tooltip=err)
+        self._show_status_message(err, kind="error")
+        self._library_bump_infer_batch_progress()
+
+    def _library_on_apply_save_worker_finished(self) -> None:
+        self._library_apply_save_worker = None
+        self.library_apply_btn.setEnabled(True)
+
+    def _library_on_apply_save_ok(self, r: int, new_path_obj: object) -> None:
+        new_path = new_path_obj if isinstance(new_path_obj, Path) else Path(new_path_obj)
+        self._library_apply_saved_path_to_ui(r, new_path)
+        self._library_set_guess_status(r, "Saved")
+        self._show_status_message(f"All set — saved “{new_path.name}”.", kind="success")
+        self._status.setText("")
+
+    def _library_on_apply_save_fail(self, r: int, err: str) -> None:
+        self._library_set_guess_status(r, "Save failed", tooltip=err)
+        self._show_status_message(err, kind="error")
+        self._status.setText("")
 
     def _library_apply_changes(self) -> None:
+        if self._library_apply_save_worker is not None:
+            self._show_status_message("Another save is still in progress.", kind="info")
+            return
         r = self._library_current_row_index()
         if r < 0:
             self._show_status_message("Select a video in the list first.", kind="info")
             return
+        payload = self._library_prepare_save_payload(r, show_errors=True)
+        if payload is None:
+            return
+        path, author, song_name, stem = payload
         self._status.setText("Saving…")
-        try:
-            new_path, _ = self._library_save_row(r, show_errors=True)
-            if new_path is not None:
-                self._show_status_message(f"All set — saved “{new_path.name}”.", kind="success")
-        finally:
-            self._status.setText("")
+        self._library_set_guess_status(
+            r,
+            "Saving",
+            tooltip="Writing tags to the file (stream copy — no re-encode).",
+        )
+        self.library_apply_btn.setEnabled(False)
+        w = LibrarySaveWorker(
+            r,
+            self._settings,
+            path,
+            author,
+            song_name,
+            stem,
+            parent=self,
+        )
+        self._library_apply_save_worker = w
+        w.finished_ok.connect(self._library_on_apply_save_ok)
+        w.failed.connect(self._library_on_apply_save_fail)
+        w.finished.connect(w.deleteLater)
+        w.finished.connect(self._library_on_apply_save_worker_finished)
+        w.start()
 
     @staticmethod
     def _row_index_for_job_id(table: QTableWidget, job_id: str) -> int:
