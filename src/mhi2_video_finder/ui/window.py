@@ -8,8 +8,10 @@ import threading
 from typing import Any, Literal
 
 import httpx
-from PyQt6.QtCore import QObject, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QGuiApplication, QShowEvent
 from PyQt6.QtWidgets import (
+    QAbstractScrollArea,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -21,8 +23,11 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QStyle,
     QSystemTrayIcon,
@@ -74,6 +79,14 @@ from .workers import (
 _REMOTE_DAEMON_IMPORT_SUBDIR = "daemon-imports"
 # Poll daemon job list so Telegram/API-created jobs appear without restarting the UI.
 _REMOTE_JOBS_POLL_MS = 10_000
+# Shrink max window height below availableGeometry so the bottom strip stays visible (Wayland /
+# fractional scaling often clips the last ~10–20 logical px if we use the full work area).
+_WORK_AREA_BOTTOM_INSET_PX = 48
+_LIB_COL_CHECK = 0
+_LIB_COL_FILE = 1
+_LIB_COL_ARTIST = 2
+_LIB_COL_SONG = 3
+_LIB_COL_GUESS_STATUS = 4
 
 
 def _display_title_for_remote_row(raw_title: str) -> str:
@@ -86,11 +99,12 @@ class _RemoteFetchBridge(QObject):
     fail = pyqtSignal(str, str)
 
 
-class MainWindow(QWidget):
+class MainWindow(QMainWindow):
     def __init__(self, *, config_path: Path | None = None) -> None:
         super().__init__()
         self.setWindowTitle(f"mhi2-video-finder {__version__}")
-        self.resize(960, 640)
+        self._work_area_screen_hooked = False
+        self._apply_initial_window_geometry()
 
         self._config_path = config_path
         self._settings: Settings = load_settings(config_path)
@@ -146,6 +160,10 @@ class MainWindow(QWidget):
         self._library_block_edit_signals = False
         self._library_probe_worker: LibraryProbeWorker | None = None
         self._library_infer_worker: GroqInferWorker | None = None
+        self._library_infer_queue: list[int] = []
+        self._library_infer_active_row: int | None = None
+        self._library_infer_total: int = 0
+        self._library_infer_done: int = 0
 
         self._status_message_timer = QTimer(self)
         self._status_message_timer.setSingleShot(True)
@@ -158,9 +176,16 @@ class MainWindow(QWidget):
         tabs.addTab(self._build_library_tab(), "Library")
         tabs.addTab(self._build_settings_tab(), "Settings")
 
-        root = QVBoxLayout(self)
-        root.addWidget(tabs)
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+        # Breathing room above the physical window bottom so descenders / anti-aliasing are not cut off.
+        root.setContentsMargins(0, 0, 0, 16)
+        root.setSpacing(0)
+        root.addWidget(tabs, 1)
 
+        # Keep status strip inside the central layout (not QStatusBar). Some Wayland compositors
+        # place QStatusBar outside the client region in windowed mode; fullscreen is unaffected.
         self._message_bar = QFrame()
         self._message_bar.setVisible(False)
         self._message_bar.setStyleSheet(
@@ -174,13 +199,27 @@ class MainWindow(QWidget):
         self._message_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._message_text = QLabel("")
         self._message_text.setWordWrap(True)
+        self._message_text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         mb_row.addWidget(self._message_icon, alignment=Qt.AlignmentFlag.AlignTop)
         mb_row.addWidget(self._message_text, stretch=1)
-        root.addWidget(self._message_bar)
 
         self._status = QLabel("")
-        self._status.setStyleSheet("color: palette(mid); padding: 2px 6px;")
-        root.addWidget(self._status)
+        self._status.setStyleSheet("color: palette(mid); padding: 4px 6px 10px 6px;")
+        self._status.setWordWrap(True)
+        self._status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        # Empty label has zero min height; without this the footer collapses and tabs steal all space.
+        self._status.setMinimumHeight(max(22, self.fontMetrics().height() + 6))
+
+        footer = QWidget()
+        fl = QVBoxLayout(footer)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.setSpacing(0)
+        fl.addWidget(self._message_bar)
+        fl.addWidget(self._status)
+        footer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        footer.setMinimumHeight(self._status.minimumHeight())
+        root.addWidget(footer, 0)
+
         if self._remote is not None:
             self._remote.user_status.connect(self._status.setText)
 
@@ -199,6 +238,131 @@ class MainWindow(QWidget):
     def _poll_remote_daemon_jobs(self) -> None:
         if self._remote is not None and self._use_remote:
             self._remote.fetch_recent_jobs_async(200)
+
+    def _apply_initial_window_geometry(self) -> None:
+        """Place and size the window inside the work area (respects top/bottom panels)."""
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            self.resize(960, 640)
+            return
+        ag = screen.availableGeometry()
+        w, h = 960, 640
+        # Leave room for title bar / frame before first paint (frameGeometry not reliable yet).
+        frame_allow = 48
+        w = min(w, max(400, ag.width() - 24))
+        h = min(h, max(300, ag.height() - frame_allow - 24))
+        x = ag.x() + max(0, (ag.width() - w) // 2)
+        y = ag.y() + max(0, (ag.height() - h) // 2)
+        self.setGeometry(x, y, w, h)
+
+    def _frame_decoration_extra(self) -> tuple[int, int]:
+        """Extra width/height of the window frame beyond the client area (for availableGeometry math)."""
+        wh = self.windowHandle()
+        if wh is not None:
+            fm = wh.frameMargins()
+            ew = fm.left() + fm.right()
+            eh = fm.top() + fm.bottom()
+            if ew > 0 or eh > 0:
+                return ew, eh
+        fg = self.frameGeometry()
+        ew = max(0, fg.width() - self.width())
+        eh = max(0, fg.height() - self.height())
+        if ew == 0 and eh == 0:
+            eh = max(eh, 36)
+        return ew, eh
+
+    def _apply_window_maximum_to_work_area(self) -> None:
+        """Cap window client size so the full frame fits in the screen work area (non-fullscreen)."""
+        if self.isFullScreen() or self.isMaximized():
+            self.setMaximumSize(16777215, 16777215)
+            return
+        screen = self.screen()
+        if screen is None:
+            return
+        ag = screen.availableGeometry()
+        ew, eh = self._frame_decoration_extra()
+        inset = _WORK_AREA_BOTTOM_INSET_PX
+        try:
+            dpr = float(screen.devicePixelRatio())
+            inset = max(inset, int(16 * max(1.0, dpr)))
+        except (TypeError, ValueError):
+            pass
+        mw = max(self.minimumWidth(), ag.width() - ew)
+        mh = max(self.minimumHeight(), ag.height() - eh - inset)
+        self.setMaximumSize(mw, mh)
+        # Some platforms keep a taller window until an explicit resize.
+        nw = max(self.minimumWidth(), min(self.width(), mw))
+        nh = max(self.minimumHeight(), min(self.height(), mh))
+        if nw != self.width() or nh != self.height():
+            self.resize(nw, nh)
+
+    def _fit_window_to_work_area(self) -> None:
+        """Keep the window frame inside ``availableGeometry`` (panel-safe when not fullscreen)."""
+        if self.isFullScreen() or self.isMaximized():
+            return
+        screen = self.screen()
+        if screen is None:
+            return
+        ag = screen.availableGeometry()
+        inset = _WORK_AREA_BOTTOM_INSET_PX
+        try:
+            dpr = float(screen.devicePixelRatio())
+            inset = max(inset, int(16 * max(1.0, dpr)))
+        except (TypeError, ValueError):
+            pass
+        target_bottom = ag.bottom() - inset
+        fg = self.frameGeometry()
+        if fg.height() > ag.height() - inset:
+            nh = max(self.minimumHeight(), self.height() - (fg.height() - (ag.height() - inset)))
+            self.resize(self.width(), nh)
+            fg = self.frameGeometry()
+        if fg.width() > ag.width():
+            nw = max(self.minimumWidth(), self.width() - (fg.width() - ag.width()))
+            self.resize(nw, self.height())
+            fg = self.frameGeometry()
+        x, y = fg.x(), fg.y()
+        if fg.right() > ag.right():
+            x = ag.right() - fg.width()
+        if fg.left() < ag.left():
+            x = ag.left()
+        if fg.bottom() > target_bottom:
+            y = fg.y() + target_bottom - fg.bottom()
+        if fg.top() < ag.top():
+            y = ag.top()
+        if x != fg.x() or y != fg.y():
+            self.move(x, y)
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        if not self._work_area_screen_hooked:
+            wh = self.windowHandle()
+            if wh is not None:
+                wh.screenChanged.connect(self._on_window_screen_changed)
+                self._work_area_screen_hooked = True
+            else:
+                QTimer.singleShot(0, self._try_hook_screen_changed_for_work_area)
+        QTimer.singleShot(0, self._apply_window_maximum_to_work_area)
+        QTimer.singleShot(0, self._fit_window_to_work_area)
+        QTimer.singleShot(50, self._apply_window_maximum_to_work_area)
+        QTimer.singleShot(150, self._apply_window_maximum_to_work_area)
+
+    def _try_hook_screen_changed_for_work_area(self) -> None:
+        if self._work_area_screen_hooked:
+            return
+        wh = self.windowHandle()
+        if wh is not None:
+            wh.screenChanged.connect(self._on_window_screen_changed)
+            self._work_area_screen_hooked = True
+
+    def _on_window_screen_changed(self, _screen: object) -> None:
+        QTimer.singleShot(0, self._apply_window_maximum_to_work_area)
+        QTimer.singleShot(0, self._fit_window_to_work_area)
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            QTimer.singleShot(0, self._apply_window_maximum_to_work_area)
+            QTimer.singleShot(0, self._fit_window_to_work_area)
 
     def _hide_status_message(self) -> None:
         self._message_bar.setVisible(False)
@@ -773,14 +937,20 @@ class MainWindow(QWidget):
         self.results_table.horizontalHeader().setStretchLastSection(True)
         self.results_table.setColumnWidth(0, 36)
         self.results_table.setColumnWidth(3, 72)
-        lay.addWidget(self.results_table)
+        self.results_table.setMinimumHeight(96)
+        self.results_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        lay.addWidget(self.results_table, 1)
 
-        queue_row = QHBoxLayout()
         self.subdir_edit = QLineEdit()
         self.subdir_edit.setPlaceholderText("Output subfolder under Videos/mhi2-video-finder")
         self.subdir_edit.setText("gui-downloads")
-        queue_row.addWidget(QLabel("Subfolder:"))
-        queue_row.addWidget(self.subdir_edit)
+        self.subdir_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.subdir_edit.setMinimumWidth(80)
+
+        queue_row1 = QHBoxLayout()
+        queue_row1.addWidget(QLabel("Subfolder:"))
+        queue_row1.addWidget(self.subdir_edit, 1)
+
         self.infer_subdir_cb = QCheckBox("Infer subfolder from artist / channel")
         self.infer_subdir_cb.setToolTip(
             "After a successful search, set the subfolder from the Artist field when it is filled, "
@@ -788,13 +958,20 @@ class MainWindow(QWidget):
             "or from the first result’s channel name otherwise."
         )
         self.infer_subdir_cb.toggled.connect(self._on_infer_subdir_toggled)
-        queue_row.addWidget(self.infer_subdir_cb)
         self.no_embed_cb = QCheckBox("Transcode only (no tags / album art)")
-        queue_row.addWidget(self.no_embed_cb)
         self.queue_btn = QPushButton("Queue selected for download")
         self.queue_btn.clicked.connect(self._queue_selected)
-        queue_row.addWidget(self.queue_btn)
-        lay.addLayout(queue_row)
+
+        queue_row2 = QHBoxLayout()
+        queue_row2.addWidget(self.infer_subdir_cb)
+        queue_row2.addWidget(self.no_embed_cb)
+        queue_row2.addWidget(self.queue_btn)
+        queue_row2.addStretch()
+
+        queue_outer = QVBoxLayout()
+        queue_outer.addLayout(queue_row1)
+        queue_outer.addLayout(queue_row2)
+        lay.addLayout(queue_outer)
 
         return w
 
@@ -1289,7 +1466,9 @@ class MainWindow(QWidget):
         hh.setStretchLastSection(True)
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         hh.resizeSection(0, 28)
-        lay.addWidget(self.downloads_table)
+        self.downloads_table.setMinimumHeight(96)
+        self.downloads_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        lay.addWidget(self.downloads_table, 1)
         return w
 
     def _build_convert_tab(self) -> QWidget:
@@ -1318,15 +1497,21 @@ class MainWindow(QWidget):
         ch.setStretchLastSection(True)
         ch.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         ch.resizeSection(0, 28)
-        lay.addWidget(self.convert_table)
+        self.convert_table.setMinimumHeight(96)
+        self.convert_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        lay.addWidget(self.convert_table, 1)
         return w
 
     def _build_library_tab(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
+        """Scrollable tab so a tall table + wrapped hint cannot force the status bar off-screen."""
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(0, 0, 0, 0)
         top = QHBoxLayout()
         top.addWidget(QLabel("Folder:"))
         self.ui_library_folder = QLineEdit()
+        self.ui_library_folder.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.ui_library_folder.setMinimumWidth(120)
         self.ui_library_folder.setPlaceholderText("Path to a folder of videos (subfolders included)")
         if self._settings.library_last_folder is not None:
             self.ui_library_folder.setText(str(self._settings.library_last_folder))
@@ -1340,15 +1525,26 @@ class MainWindow(QWidget):
         top.addWidget(scan_btn)
         lay.addLayout(top)
 
-        self.library_table = QTableWidget(0, 3)
-        self.library_table.setHorizontalHeaderLabels(["File", "Artist", "Song"])
+        self.library_table = QTableWidget(0, 5)
+        self.library_table.setHorizontalHeaderLabels(["", "File", "Artist", "Song", "AI status"])
         hh = self.library_table.horizontalHeader()
         hh.setStretchLastSection(True)
-        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(_LIB_COL_CHECK, QHeaderView.ResizeMode.Fixed)
+        hh.resizeSection(_LIB_COL_CHECK, 28)
+        hh.setSectionResizeMode(_LIB_COL_FILE, QHeaderView.ResizeMode.Stretch)
         self.library_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.library_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.library_table.itemSelectionChanged.connect(self._library_on_selection_changed)
-        lay.addWidget(self.library_table, stretch=1)
+        self.library_table.setMinimumHeight(96)
+        self.library_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.library_table.setSizeAdjustPolicy(
+            QAbstractScrollArea.SizeAdjustPolicy.AdjustIgnored
+        )
+        # Fixed row height so row count does not inflate minimum tab height (fixes status bar clipping).
+        vh = self.library_table.verticalHeader()
+        vh.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        vh.setDefaultSectionSize(24)
+        lay.addWidget(self.library_table, 1)
 
         edit_box = QGroupBox("This video")
         eg = QGridLayout(edit_box)
@@ -1370,6 +1566,18 @@ class MainWindow(QWidget):
         lay.addWidget(edit_box)
 
         btn_row = QHBoxLayout()
+        select_all_guess_btn = QPushButton("Select all")
+        select_all_guess_btn.clicked.connect(partial(self._library_set_all_checks, True))
+        btn_row.addWidget(select_all_guess_btn)
+        clear_guess_btn = QPushButton("Clear selection")
+        clear_guess_btn.clicked.connect(partial(self._library_set_all_checks, False))
+        btn_row.addWidget(clear_guess_btn)
+        self.library_bulk_infer_btn = QPushButton("Guess selected")
+        self.library_bulk_infer_btn.setToolTip(
+            "Run AI guessing for all checked rows, one by one."
+        )
+        self.library_bulk_infer_btn.clicked.connect(self._library_infer_checked_groq)
+        btn_row.addWidget(self.library_bulk_infer_btn)
         self.library_infer_btn = QPushButton("Guess artist & song")
         self.library_infer_btn.setToolTip(
             "Fill Artist and Song using Groq from the file name and media info. "
@@ -1388,13 +1596,25 @@ class MainWindow(QWidget):
         lay.addLayout(btn_row)
 
         lib_hint = QLabel(
-            "Pick a folder and choose Find all videos. Click a row to load details, then edit by hand or "
-            "use Guess artist & song. Configure the AI under Settings → AI assistant (or set GROQ_API_KEY)."
+            "Pick a folder and choose Find all videos. Click a row to load details, then edit by hand, "
+            "guess one row, or check multiple rows and use Guess selected. Configure the AI under "
+            "Settings → AI assistant (or set GROQ_API_KEY)."
         )
         lib_hint.setWordWrap(True)
         lib_hint.setStyleSheet("color: palette(mid);")
+        lib_hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         lay.addWidget(lib_hint)
-        return w
+
+        scroll = QScrollArea()
+        scroll.setWidget(inner)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setMinimumSize(0, 0)
+        scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        inner.setMinimumWidth(0)
+        return scroll
 
     def _browse_library_folder(self) -> None:
         start = self.ui_library_folder.text().strip() or str(Path.home())
@@ -1433,6 +1653,10 @@ class MainWindow(QWidget):
             self.library_table.setRowCount(len(self._library_rows))
             root = self._library_root
             for i, row in enumerate(self._library_rows):
+                chk = QTableWidgetItem()
+                chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+                chk.setCheckState(Qt.CheckState.Unchecked)
+                self.library_table.setItem(i, _LIB_COL_CHECK, chk)
                 if root is not None:
                     try:
                         rel = str(row.path.resolve().relative_to(root.resolve()))
@@ -1443,11 +1667,40 @@ class MainWindow(QWidget):
                 it0 = QTableWidgetItem(rel)
                 it0.setData(Qt.ItemDataRole.UserRole, str(row.path))
                 it0.setToolTip(str(row.path))
-                self.library_table.setItem(i, 0, it0)
-                self.library_table.setItem(i, 1, QTableWidgetItem(row.author))
-                self.library_table.setItem(i, 2, QTableWidgetItem(row.song_name))
+                self.library_table.setItem(i, _LIB_COL_FILE, it0)
+                self.library_table.setItem(i, _LIB_COL_ARTIST, QTableWidgetItem(row.author))
+                self.library_table.setItem(i, _LIB_COL_SONG, QTableWidgetItem(row.song_name))
+                self.library_table.setItem(i, _LIB_COL_GUESS_STATUS, QTableWidgetItem(row.ai_guess_status))
         finally:
             self._library_populating_table = False
+
+    def _library_checked_row_indices(self) -> list[int]:
+        out: list[int] = []
+        for i in range(self.library_table.rowCount()):
+            chk = self.library_table.item(i, _LIB_COL_CHECK)
+            if chk is not None and chk.checkState() == Qt.CheckState.Checked:
+                out.append(i)
+        return out
+
+    def _library_set_all_checks(self, checked: bool) -> None:
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        for i in range(self.library_table.rowCount()):
+            chk = self.library_table.item(i, _LIB_COL_CHECK)
+            if chk is not None:
+                chk.setCheckState(state)
+
+    def _library_set_guess_status(self, row_idx: int, status: str, *, tooltip: str = "") -> None:
+        if row_idx < 0 or row_idx >= len(self._library_rows):
+            return
+        row = self._library_rows[row_idx]
+        row.ai_guess_status = status
+        st_item = self.library_table.item(row_idx, _LIB_COL_GUESS_STATUS)
+        if st_item is None:
+            st_item = QTableWidgetItem(status)
+            self.library_table.setItem(row_idx, _LIB_COL_GUESS_STATUS, st_item)
+        else:
+            st_item.setText(status)
+        st_item.setToolTip(tooltip)
 
     def _library_current_row_index(self) -> int:
         r = self.library_table.currentRow()
@@ -1501,12 +1754,12 @@ class MainWindow(QWidget):
             row.author = author
         if title and not row.song_name:
             row.song_name = title
-        it0 = self.library_table.item(row_idx, 0)
+        it0 = self.library_table.item(row_idx, _LIB_COL_FILE)
         if it0 is not None:
             it0.setText(rel_display)
             it0.setToolTip(str(row.path))
-        it_a = self.library_table.item(row_idx, 1)
-        it_s = self.library_table.item(row_idx, 2)
+        it_a = self.library_table.item(row_idx, _LIB_COL_ARTIST)
+        it_s = self.library_table.item(row_idx, _LIB_COL_SONG)
         if it_a is not None:
             it_a.setText(row.author)
         if it_s is not None:
@@ -1534,20 +1787,29 @@ class MainWindow(QWidget):
         row.author = self.ui_lib_author.text().strip()
         row.song_name = self.ui_lib_song.text().strip()
         row.filename_stem = self.ui_lib_stem.text().strip()
-        a_item = self.library_table.item(r, 1)
-        s_item = self.library_table.item(r, 2)
+        a_item = self.library_table.item(r, _LIB_COL_ARTIST)
+        s_item = self.library_table.item(r, _LIB_COL_SONG)
         if a_item is not None:
             a_item.setText(row.author)
         if s_item is not None:
             s_item.setText(row.song_name)
 
     def _library_infer_groq(self) -> None:
-        self._sync_widgets_to_settings()
         r = self._library_current_row_index()
         if r < 0:
             self._show_status_message("Select a video in the list first.", kind="info")
             return
-        row = self._library_rows[r]
+        self._library_start_infer_queue([r])
+
+    def _library_infer_checked_groq(self) -> None:
+        checked = self._library_checked_row_indices()
+        if not checked:
+            self._show_status_message("Check one or more rows first.", kind="info")
+            return
+        self._library_start_infer_queue(checked)
+
+    def _library_start_infer_queue(self, row_indices: list[int]) -> None:
+        self._sync_widgets_to_settings()
         key = (self._settings.groq_api_key or "").strip()
         if not key:
             self._show_status_message(
@@ -1555,9 +1817,35 @@ class MainWindow(QWidget):
                 kind="info",
             )
             return
-        if self._library_infer_worker is not None:
+        if self._library_infer_worker is not None or self._library_infer_queue:
             self._show_status_message("Already asking the AI — one moment.", kind="info")
             return
+        valid = [i for i in row_indices if 0 <= i < len(self._library_rows)]
+        if not valid:
+            self._show_status_message("Nothing to guess right now.", kind="info")
+            return
+        self._library_infer_queue = valid
+        self._library_infer_total = len(valid)
+        self._library_infer_done = 0
+        self._library_run_next_infer()
+
+    def _library_run_next_infer(self) -> None:
+        if self._library_infer_worker is not None:
+            return
+        if not self._library_infer_queue:
+            if self._library_infer_total > 0:
+                self._show_status_message(
+                    f"AI guessing complete ({self._library_infer_done}/{self._library_infer_total}).",
+                    kind="success",
+                )
+            self._status.setText("")
+            self._library_infer_active_row = None
+            self._library_infer_total = 0
+            self._library_infer_done = 0
+            return
+        row_idx = self._library_infer_queue.pop(0)
+        self._library_infer_active_row = row_idx
+        row = self._library_rows[row_idx]
         if not row.probe_summary:
             try:
                 from mhi2_video_finder.ffprobe_util import ffprobe_json, summarize_probe
@@ -1565,10 +1853,19 @@ class MainWindow(QWidget):
                 data = ffprobe_json(row.path)
                 row.probe_summary = summarize_probe(data)
             except Exception as e:
-                self._show_status_message(f"Could not read this file: {e}", kind="error")
+                self._library_set_guess_status(row_idx, "Failed", tooltip=str(e))
+                self._library_infer_done += 1
+                self._show_status_message(
+                    f"Skipped {row.path.name}: could not read media info.",
+                    kind="error",
+                )
+                self._library_run_next_infer()
                 return
-        self._show_status_message("Hang tight — asking the AI…", kind="info")
-        self._status.setText("Asking Groq…")
+        self._library_set_guess_status(row_idx, "Guessing")
+        step = self._library_infer_done + 1
+        self._status.setText(
+            f"Asking Groq… ({step}/{self._library_infer_total}) {row.path.name}"
+        )
         w = GroqInferWorker(
             self._settings,
             filename=row.path.name,
@@ -1583,48 +1880,43 @@ class MainWindow(QWidget):
 
     def _library_infer_finished_cleanup(self) -> None:
         self._library_infer_worker = None
+        self._library_infer_active_row = None
+        self._library_run_next_infer()
 
     def _library_on_infer_ok(self, author: str, song: str) -> None:
-        r = self._library_current_row_index()
-        if r < 0:
-            self._show_status_message(
-                "AI finished — select a row to see the result.",
-                kind="info",
-            )
-            self._status.setText("")
+        r = self._library_infer_active_row
+        if r is None or r < 0 or r >= len(self._library_rows):
             return
         row = self._library_rows[r]
         if author:
             row.author = author
         if song:
             row.song_name = song
-        self._library_block_edit_signals = True
-        try:
-            self.ui_lib_author.setText(row.author)
-            self.ui_lib_song.setText(row.song_name)
-        finally:
-            self._library_block_edit_signals = False
-        a_item = self.library_table.item(r, 1)
-        s_item = self.library_table.item(r, 2)
+        if self.library_table.currentRow() == r:
+            self._library_block_edit_signals = True
+            try:
+                self.ui_lib_author.setText(row.author)
+                self.ui_lib_song.setText(row.song_name)
+            finally:
+                self._library_block_edit_signals = False
+        a_item = self.library_table.item(r, _LIB_COL_ARTIST)
+        s_item = self.library_table.item(r, _LIB_COL_SONG)
         if a_item is not None:
             a_item.setText(row.author)
         if s_item is not None:
             s_item.setText(row.song_name)
         bits = [x for x in (row.author, row.song_name) if x]
         if bits:
-            self._show_status_message(
-                f"Here’s a guess: {' · '.join(bits)}. You can still edit it above.",
-                kind="success",
-            )
+            self._library_set_guess_status(r, "Guessed")
         else:
-            self._show_status_message(
-                "The AI wasn’t sure — try typing the artist and song yourself.",
-                kind="info",
-            )
-        self._status.setText("")
+            self._library_set_guess_status(r, "None", tooltip="AI was not sure.")
+        self._library_infer_done += 1
 
     def _library_on_infer_fail(self, err: str) -> None:
-        self._status.setText("")
+        r = self._library_infer_active_row
+        if r is not None:
+            self._library_set_guess_status(r, "Failed", tooltip=err.strip())
+        self._library_infer_done += 1
         self._show_status_message(err.strip() or "Could not reach the AI.", kind="error")
 
     def _library_apply_changes(self) -> None:
@@ -1660,7 +1952,7 @@ class MainWindow(QWidget):
             return
         row.path = new_path
         row.filename_stem = new_path.stem
-        it0 = self.library_table.item(r, 0)
+        it0 = self.library_table.item(r, _LIB_COL_FILE)
         if it0 is not None:
             it0.setData(Qt.ItemDataRole.UserRole, str(new_path))
             if self._library_root is not None:
@@ -1677,8 +1969,8 @@ class MainWindow(QWidget):
             self.ui_lib_stem.setText(row.filename_stem)
         finally:
             self._library_block_edit_signals = False
-        it_a = self.library_table.item(r, 1)
-        it_s = self.library_table.item(r, 2)
+        it_a = self.library_table.item(r, _LIB_COL_ARTIST)
+        it_s = self.library_table.item(r, _LIB_COL_SONG)
         if it_a is not None:
             it_a.setText(row.author)
         if it_s is not None:

@@ -32,6 +32,7 @@ class LibraryFileRow:
     song_name: str = ""
     filename_stem: str = ""
     probe_summary: str = ""
+    ai_guess_status: str = "None"
     _dirty: bool = field(default=False, repr=False)
 
     def __post_init__(self) -> None:
