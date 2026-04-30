@@ -69,6 +69,7 @@ from .workers import (
     ConvertService,
     DownloadService,
     GroqInferWorker,
+    LibraryBulkRenameToSongWorker,
     LibraryProbeWorker,
     LibrarySaveWorker,
     LibraryScanWorker,
@@ -171,6 +172,7 @@ class MainWindow(QMainWindow):
         self._library_infer_skip_if_tagged: bool = False
         self._library_infer_mp4_compat_mode: bool = False
         self._library_apply_save_worker: LibrarySaveWorker | None = None
+        self._library_bulk_rename_worker: LibraryBulkRenameToSongWorker | None = None
         self._library_scan_worker: LibraryScanWorker | None = None
 
         self._status_message_timer = QTimer(self)
@@ -1594,6 +1596,12 @@ class MainWindow(QMainWindow):
         clear_guess_btn = QPushButton("Clear selection")
         clear_guess_btn.clicked.connect(partial(self._library_set_all_checks, False))
         btn_row.addWidget(clear_guess_btn)
+        self.library_bulk_rename_song_btn = QPushButton("Rename selected to Song title")
+        self.library_bulk_rename_song_btn.setToolTip(
+            "Uses each file's embedded metadata title and renames to '{SONG_TITLE}' while keeping extension."
+        )
+        self.library_bulk_rename_song_btn.clicked.connect(self._library_bulk_rename_to_song_titles)
+        btn_row.addWidget(self.library_bulk_rename_song_btn)
         self.library_bulk_infer_btn = QPushButton("Guess selected")
         self.library_bulk_infer_btn.setToolTip(
             "Run AI on checked rows with up to 3 Groq requests at a time; ffprobe and saving stay off the UI "
@@ -1629,9 +1637,12 @@ class MainWindow(QMainWindow):
         self.library_skip_tagged_cb.setChecked(self._settings.library_skip_bulk_infer_if_tagged)
         self.library_skip_tagged_cb.toggled.connect(self._library_on_bulk_infer_option_toggled)
         bulk_opts.addWidget(self.library_skip_tagged_cb)
-        self.library_mp4_compat_cb = QCheckBox("MP4 compatibility mode (Guess selected: fill Song only)")
+        self.library_mp4_compat_cb = QCheckBox(
+            "MP4 compatibility mode (Guess selected: Song becomes 'Title - Author')"
+        )
         self.library_mp4_compat_cb.setToolTip(
-            "Bulk AI leaves Artist empty and only fills Song. Useful for MHI2 setups that ignore MP4 artist tags."
+            "Bulk AI leaves Artist empty and writes Song as 'title - author'. Useful for MHI2 setups "
+            "that ignore MP4 artist tags."
         )
         self.library_mp4_compat_cb.setChecked(self._settings.library_bulk_infer_mp4_compat_mode)
         self.library_mp4_compat_cb.toggled.connect(self._library_on_bulk_infer_option_toggled)
@@ -1998,10 +2009,17 @@ class MainWindow(QMainWindow):
         row = self._library_rows[r]
         if self._library_infer_mp4_compat_mode:
             row.author = ""
-        elif author:
-            row.author = author
-        if song:
-            row.song_name = song
+            if song and author:
+                row.song_name = f"{song} - {author}"
+            elif song:
+                row.song_name = song
+            elif author:
+                row.song_name = author
+        else:
+            if author:
+                row.author = author
+            if song:
+                row.song_name = song
         if self.library_table.currentRow() == r:
             self._library_block_edit_signals = True
             try:
@@ -2187,6 +2205,71 @@ class MainWindow(QMainWindow):
         w.finished.connect(w.deleteLater)
         w.finished.connect(self._library_on_apply_save_worker_finished)
         w.start()
+
+    def _library_bulk_rename_to_song_titles(self) -> None:
+        if self._library_bulk_rename_worker is not None:
+            self._show_status_message("Bulk rename is already in progress.", kind="info")
+            return
+        checked = self._library_checked_row_indices()
+        if not checked:
+            self._show_status_message("Check one or more rows first.", kind="info")
+            return
+        targets: list[tuple[int, Path]] = []
+        for idx in checked:
+            if 0 <= idx < len(self._library_rows):
+                targets.append((idx, self._library_rows[idx].path))
+                self._library_set_guess_status(
+                    idx,
+                    "Renaming",
+                    tooltip="Reading metadata title and renaming the file.",
+                )
+        if not targets:
+            self._show_status_message("Nothing to rename right now.", kind="info")
+            return
+        self.library_bulk_rename_song_btn.setEnabled(False)
+        self._status.setText(f"Bulk rename… {len(targets)} file(s)")
+        w = LibraryBulkRenameToSongWorker(targets, parent=self)
+        self._library_bulk_rename_worker = w
+        w.row_renamed.connect(self._library_on_bulk_rename_row_renamed)
+        w.row_skipped.connect(self._library_on_bulk_rename_row_skipped)
+        w.row_failed.connect(self._library_on_bulk_rename_row_failed)
+        w.batch_done.connect(self._library_on_bulk_rename_batch_done)
+        w.finished.connect(w.deleteLater)
+        w.finished.connect(self._library_on_bulk_rename_worker_finished)
+        w.start()
+
+    def _library_on_bulk_rename_row_renamed(self, row_idx: int, new_path_obj: object, song: str) -> None:
+        if row_idx < 0 or row_idx >= len(self._library_rows):
+            return
+        row = self._library_rows[row_idx]
+        row.song_name = (song or "").strip()
+        new_path = new_path_obj if isinstance(new_path_obj, Path) else Path(str(new_path_obj))
+        self._library_apply_saved_path_to_ui(row_idx, new_path)
+        if self.library_table.currentRow() == row_idx:
+            self._library_block_edit_signals = True
+            try:
+                self.ui_lib_song.setText(row.song_name)
+            finally:
+                self._library_block_edit_signals = False
+        self._library_set_guess_status(row_idx, "Renamed")
+
+    def _library_on_bulk_rename_row_skipped(self, row_idx: int, reason: str) -> None:
+        self._library_set_guess_status(row_idx, "Skipped", tooltip=reason.strip())
+
+    def _library_on_bulk_rename_row_failed(self, row_idx: int, err: str) -> None:
+        self._library_set_guess_status(row_idx, "Rename failed", tooltip=err.strip())
+
+    def _library_on_bulk_rename_batch_done(self, renamed: int, skipped: int, failed: int) -> None:
+        self._status.setText("")
+        total = renamed + skipped + failed
+        self._show_status_message(
+            f"Bulk rename complete ({renamed} renamed, {skipped} skipped, {failed} failed; {total} total).",
+            kind="success" if failed == 0 else "info",
+        )
+
+    def _library_on_bulk_rename_worker_finished(self) -> None:
+        self._library_bulk_rename_worker = None
+        self.library_bulk_rename_song_btn.setEnabled(True)
 
     @staticmethod
     def _row_index_for_job_id(table: QTableWidget, job_id: str) -> int:

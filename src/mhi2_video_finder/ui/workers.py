@@ -453,6 +453,50 @@ class LibrarySaveWorker(QThread):
             )
 
 
+class LibraryBulkRenameToSongWorker(QThread):
+    """Rename selected library files to song title from embedded metadata."""
+
+    row_renamed = pyqtSignal(int, object, str)  # row_idx, new_path, song_title
+    row_skipped = pyqtSignal(int, str)
+    row_failed = pyqtSignal(int, str)
+    batch_done = pyqtSignal(int, int, int)  # renamed, skipped, failed
+
+    def __init__(self, targets: list[tuple[int, Path]], parent=None) -> None:
+        super().__init__(parent)
+        self._targets = targets
+
+    def run(self) -> None:
+        from mhi2_video_finder.ffprobe_util import ffprobe_json, format_tags_from_probe
+        from mhi2_video_finder.local_tags import rename_if_needed
+
+        renamed = 0
+        skipped = 0
+        failed = 0
+        for row_idx, path in self._targets:
+            if self.isInterruptionRequested():
+                return
+            try:
+                p = path.expanduser().resolve()
+                if not p.is_file():
+                    failed += 1
+                    self.row_failed.emit(row_idx, "File is missing.")
+                    continue
+                data = ffprobe_json(p)
+                _artist, title = format_tags_from_probe(data)
+                song_title = (title or "").strip()
+                if not song_title:
+                    skipped += 1
+                    self.row_skipped.emit(row_idx, "No song title found in metadata.")
+                    continue
+                new_path = rename_if_needed(p, song_title)
+                renamed += 1
+                self.row_renamed.emit(row_idx, new_path, song_title)
+            except Exception as e:
+                failed += 1
+                self.row_failed.emit(row_idx, str(e).strip() or "Could not rename file.")
+        self.batch_done.emit(renamed, skipped, failed)
+
+
 class GroqInferWorker(QThread):
     """Background ffprobe (when needed) + Groq inference — never block the GUI thread."""
 

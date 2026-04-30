@@ -5,7 +5,7 @@
 # Builds into pacman/src and pacman/pkg (avoids clobbering the repo's top-level src/).
 
 pkgname=mhi2-video-finder
-pkgver=0.12.0
+pkgver=0.13.0
 pkgrel=1
 pkgdesc="YouTube music-video search, download (yt-dlp), and MHI2-oriented MP4 transcode"
 arch=('any')
