@@ -205,3 +205,11 @@ def test_save_settings_merges_unknown_keys(tmp_path: Path) -> None:
     s2 = load_settings(cfg)
     assert s2.max_parallel_downloads == 2
     assert s2.ffmpeg_nice == 10
+
+
+def test_load_settings_mp4_compat_mode_from_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MHI2_VIDEO_FINDER_LIBRARY_BULK_INFER_MP4_COMPAT_MODE", "true")
+    s = load_settings(tmp_path / "nope.toml")
+    assert s.library_bulk_infer_mp4_compat_mode is True

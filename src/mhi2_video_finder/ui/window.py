@@ -169,6 +169,7 @@ class MainWindow(QMainWindow):
         self._library_infer_total: int = 0
         self._library_infer_done: int = 0
         self._library_infer_skip_if_tagged: bool = False
+        self._library_infer_mp4_compat_mode: bool = False
         self._library_apply_save_worker: LibrarySaveWorker | None = None
         self._library_scan_worker: LibraryScanWorker | None = None
 
@@ -756,6 +757,10 @@ class MainWindow(QMainWindow):
             self.library_skip_tagged_cb.blockSignals(True)
             self.library_skip_tagged_cb.setChecked(self._settings.library_skip_bulk_infer_if_tagged)
             self.library_skip_tagged_cb.blockSignals(False)
+        if hasattr(self, "library_mp4_compat_cb"):
+            self.library_mp4_compat_cb.blockSignals(True)
+            self.library_mp4_compat_cb.setChecked(self._settings.library_bulk_infer_mp4_compat_mode)
+            self.library_mp4_compat_cb.blockSignals(False)
 
     def _sync_widgets_to_settings(self) -> None:
         pb = self.ui_processing_backend.currentData()
@@ -792,6 +797,8 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, "library_skip_tagged_cb"):
             self._settings.library_skip_bulk_infer_if_tagged = self.library_skip_tagged_cb.isChecked()
+        if hasattr(self, "library_mp4_compat_cb"):
+            self._settings.library_bulk_infer_mp4_compat_mode = self.library_mp4_compat_cb.isChecked()
 
     def _update_vaapi_options_visibility(self) -> None:
         data = self.ui_video_encoder.currentData()
@@ -1620,8 +1627,15 @@ class MainWindow(QMainWindow):
             "(AI status shows Skipped). Single-row “Guess artist & song” always runs."
         )
         self.library_skip_tagged_cb.setChecked(self._settings.library_skip_bulk_infer_if_tagged)
-        self.library_skip_tagged_cb.toggled.connect(self._library_on_skip_tagged_toggled)
+        self.library_skip_tagged_cb.toggled.connect(self._library_on_bulk_infer_option_toggled)
         bulk_opts.addWidget(self.library_skip_tagged_cb)
+        self.library_mp4_compat_cb = QCheckBox("MP4 compatibility mode (Guess selected: fill Song only)")
+        self.library_mp4_compat_cb.setToolTip(
+            "Bulk AI leaves Artist empty and only fills Song. Useful for MHI2 setups that ignore MP4 artist tags."
+        )
+        self.library_mp4_compat_cb.setChecked(self._settings.library_bulk_infer_mp4_compat_mode)
+        self.library_mp4_compat_cb.toggled.connect(self._library_on_bulk_infer_option_toggled)
+        bulk_opts.addWidget(self.library_mp4_compat_cb)
         bulk_opts.addStretch()
         lay.addLayout(bulk_opts)
 
@@ -1865,7 +1879,7 @@ class MainWindow(QMainWindow):
         if s_item is not None:
             s_item.setText(row.song_name)
 
-    def _library_on_skip_tagged_toggled(self, _checked: bool) -> None:
+    def _library_on_bulk_infer_option_toggled(self, _checked: bool) -> None:
         self._sync_widgets_to_settings()
         try:
             save_settings(self._settings, self._config_path)
@@ -1887,12 +1901,19 @@ class MainWindow(QMainWindow):
         self._library_start_infer_queue(
             checked,
             skip_if_tagged=self.library_skip_tagged_cb.isChecked(),
+            mp4_compat_mode=self.library_mp4_compat_cb.isChecked(),
         )
 
     def _library_infer_batch_in_progress(self) -> bool:
         return self._library_infer_total > 0 and self._library_infer_done < self._library_infer_total
 
-    def _library_start_infer_queue(self, row_indices: list[int], *, skip_if_tagged: bool = False) -> None:
+    def _library_start_infer_queue(
+        self,
+        row_indices: list[int],
+        *,
+        skip_if_tagged: bool = False,
+        mp4_compat_mode: bool = False,
+    ) -> None:
         self._sync_widgets_to_settings()
         key = (self._settings.groq_api_key or "").strip()
         if not key:
@@ -1909,6 +1930,7 @@ class MainWindow(QMainWindow):
             self._show_status_message("Nothing to guess right now.", kind="info")
             return
         self._library_infer_skip_if_tagged = skip_if_tagged
+        self._library_infer_mp4_compat_mode = mp4_compat_mode
         self._library_infer_pending = valid
         self._library_infer_total = len(valid)
         self._library_infer_done = 0
@@ -1974,7 +1996,9 @@ class MainWindow(QMainWindow):
         if r < 0 or r >= len(self._library_rows):
             return
         row = self._library_rows[r]
-        if author:
+        if self._library_infer_mp4_compat_mode:
+            row.author = ""
+        elif author:
             row.author = author
         if song:
             row.song_name = song
@@ -2040,6 +2064,7 @@ class MainWindow(QMainWindow):
         self._library_infer_done = 0
         self._library_infer_pending.clear()
         self._library_infer_skip_if_tagged = False
+        self._library_infer_mp4_compat_mode = False
 
     def _library_prepare_save_payload(
         self, r: int, *, show_errors: bool

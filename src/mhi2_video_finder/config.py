@@ -48,6 +48,7 @@ def _coerce_field(name: str, raw: str) -> Any:
         "remote_auto_download",
         "groq_enabled",
         "library_skip_bulk_infer_if_tagged",
+        "library_bulk_infer_mp4_compat_mode",
     ):
         return raw.strip().lower() in ("1", "true", "yes", "on")
     if name in (
@@ -140,6 +141,8 @@ class Settings:
     library_last_folder: Path | None = None
     # Guess selected: skip files that already have non-empty artist + title tags (ffprobe).
     library_skip_bulk_infer_if_tagged: bool = False
+    # Guess selected: title-only AI mode for MP4 compatibility (leave artist empty).
+    library_bulk_infer_mp4_compat_mode: bool = False
     # Groq (OpenAI-compatible) for metadata inference.
     groq_enabled: bool = False
     groq_api_key: str | None = None
@@ -194,6 +197,7 @@ def load_settings(path: Path | None = None) -> Settings:
             "remote_auto_download",
             "groq_enabled",
             "library_skip_bulk_infer_if_tagged",
+            "library_bulk_infer_mp4_compat_mode",
         ) and isinstance(val, str):
             val = val.strip().lower() in ("1", "true", "yes", "on")
         if name == "groq_temperature" and isinstance(val, int | float):
