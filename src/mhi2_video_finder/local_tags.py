@@ -14,6 +14,48 @@ from mhi2_video_finder.metadata import MediaTags
 from mhi2_video_finder.workflow import safe_stem
 
 
+def _ffprobe_has_streams(path: Path) -> bool:
+    """True when ffprobe sees at least one readable stream in ``path``."""
+    proc = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return False
+    return any(line.strip() for line in (proc.stdout or "").splitlines())
+
+
+def _ensure_readable_streams(path: Path) -> None:
+    if _ffprobe_has_streams(path):
+        return
+    raise RuntimeError(
+        "Input file has no readable media streams (ffprobe found none), so metadata save cannot run."
+    )
+
+
+def _ffmpeg_failure_message(proc: subprocess.CompletedProcess[str]) -> str:
+    code = proc.returncode
+    stderr = (proc.stderr or "").strip()
+    stdout = (proc.stdout or "").strip()
+    detail = stderr or stdout
+    if detail:
+        # Keep the tail (where ffmpeg writes the final actionable error).
+        detail = detail[-4000:]
+        return f"ffmpeg metadata remux failed (exit code {code})\n{detail}"
+    return f"ffmpeg metadata remux failed (exit code {code})"
+
+
 def unique_sibling_path(folder: Path, stem: str, ext: str, exclude: Path | None = None) -> Path:
     """Return ``folder / (stem + ext)`` or ``stem_2``, ``stem_3``, … if that name exists."""
     ext = ext if ext.startswith(".") else f".{ext}"
@@ -54,6 +96,7 @@ def remux_copy_with_metadata(
     input_path = input_path.expanduser().resolve()
     output_path = output_path.expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_readable_streams(input_path)
 
     cmd: list[str] = [
         "ffmpeg",
@@ -76,13 +119,12 @@ def remux_copy_with_metadata(
         nice_delta=nice_delta,
         cpu_limit_percent=cpu_limit_percent,
     )
-    run_kw: dict[str, object] = {"check": True, "capture_output": True, "text": True}
+    run_kw: dict[str, object] = {"check": False, "capture_output": True, "text": True}
     if pre is not None:
         run_kw["preexec_fn"] = pre
     proc = subprocess.run(argv, **run_kw)
     if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "").strip()
-        raise RuntimeError(err or "ffmpeg metadata remux failed")
+        raise RuntimeError(_ffmpeg_failure_message(proc))
 
 
 def apply_metadata_inplace(
@@ -105,6 +147,73 @@ def apply_metadata_inplace(
             tmp,
             artist=artist,
             title=title,
+            nice_delta=nice_delta,
+            cpu_limit_percent=cpu_limit_percent,
+        )
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def remux_copy_without_metadata(
+    input_path: Path,
+    output_path: Path,
+    *,
+    nice_delta: int = 0,
+    cpu_limit_percent: int = 0,
+) -> None:
+    """Copy all streams while dropping container-level metadata."""
+    input_path = input_path.expanduser().resolve()
+    output_path = output_path.expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_readable_streams(input_path)
+
+    cmd: list[str] = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(input_path),
+        "-map",
+        "0",
+        "-c",
+        "copy",
+        "-map_metadata",
+        "-1",
+    ]
+    ext = input_path.suffix.lower()
+    if ext in (".mp4", ".m4v", ".mov"):
+        cmd.extend(["-movflags", "+faststart"])
+    cmd.append(str(output_path))
+
+    argv, pre = prepare_ffmpeg_subprocess_argv(
+        cmd,
+        nice_delta=nice_delta,
+        cpu_limit_percent=cpu_limit_percent,
+    )
+    run_kw: dict[str, object] = {"check": False, "capture_output": True, "text": True}
+    if pre is not None:
+        run_kw["preexec_fn"] = pre
+    proc = subprocess.run(argv, **run_kw)
+    if proc.returncode != 0:
+        raise RuntimeError(_ffmpeg_failure_message(proc))
+
+
+def clear_metadata_inplace(
+    path: Path,
+    *,
+    nice_delta: int = 0,
+    cpu_limit_percent: int = 0,
+) -> None:
+    """Drop file metadata in-place via a temp file in the same directory."""
+    path = path.expanduser().resolve()
+    parent = path.parent
+    fd, tmp_name = tempfile.mkstemp(suffix=path.suffix, prefix=METADATA_REMUX_TEMP_PREFIX, dir=str(parent))
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        remux_copy_without_metadata(
+            path,
+            tmp,
             nice_delta=nice_delta,
             cpu_limit_percent=cpu_limit_percent,
         )

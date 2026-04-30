@@ -15,7 +15,7 @@ class GroqInferenceError(Exception):
     """API or parse failure."""
 
 
-_SYSTEM_PROMPT = """You help identify music video files. Given a filename and technical media summary, \
+_SYSTEM_PROMPT = """You help identify music video files. Given a filename, optional folder/path hint, and technical media summary, \
 infer the performing artist and song title. Respond with a single JSON object only, no markdown, with keys:
 "author" (string) and "song_name" (string). Use empty string if unknown. Do not include other keys."""
 
@@ -45,6 +45,7 @@ def infer_author_song(
     settings: Settings,
     *,
     filename: str,
+    folder_hint: str = "",
     probe_summary: str,
     timeout: float = 60.0,
 ) -> tuple[str, str]:
@@ -58,10 +59,11 @@ def infer_author_song(
     model = (settings.groq_model or "").strip() or "llama-3.1-8b-instant"
     url = f"{base}/chat/completions"
 
-    user_msg = (
-        f"filename: {filename}\n\n"
-        f"ffprobe_summary:\n{probe_summary or '(none)'}\n"
-    )
+    hint = (folder_hint or "").strip()
+    user_msg = f"filename: {filename}\n"
+    if hint:
+        user_msg += f"folder_hint: {hint}\n"
+    user_msg += f"\nffprobe_summary:\n{probe_summary or '(none)'}\n"
 
     messages = [
         {"role": "system", "content": _SYSTEM_PROMPT},

@@ -69,6 +69,7 @@ from .workers import (
     ConvertService,
     DownloadService,
     GroqInferWorker,
+    LibraryBulkClearMetadataWorker,
     LibraryBulkRenameToSongWorker,
     LibraryProbeWorker,
     LibrarySaveWorker,
@@ -93,6 +94,8 @@ _LIB_COL_GUESS_STATUS = 4
 _LIBRARY_TABLE_FILL_BATCH_ROWS = 100
 # Concurrent Groq requests while earlier rows may still be saving (ffmpeg).
 _MAX_PARALLEL_LIBRARY_GROQ = 3
+# Concurrent ffprobe reads while loading Library artist/title columns.
+_MAX_PARALLEL_LIBRARY_PREFETCH_PROBES = 4
 
 
 def _display_title_for_remote_row(raw_title: str) -> str:
@@ -165,6 +168,11 @@ class MainWindow(QMainWindow):
         self._library_populating_table = False
         self._library_block_edit_signals = False
         self._library_probe_worker: LibraryProbeWorker | None = None
+        self._library_prefetch_pending_probe_rows: list[int] = []
+        self._library_prefetch_probe_workers: dict[int, LibraryProbeWorker] = {}
+        self._library_prefetch_probe_total: int = 0
+        self._library_prefetch_probe_done: int = 0
+        self._library_prefetch_probe_failures: int = 0
         self._library_infer_pending: list[int] = []
         self._library_infer_groq_slots_busy: int = 0
         self._library_infer_total: int = 0
@@ -173,6 +181,7 @@ class MainWindow(QMainWindow):
         self._library_infer_mp4_compat_mode: bool = False
         self._library_apply_save_worker: LibrarySaveWorker | None = None
         self._library_bulk_rename_worker: LibraryBulkRenameToSongWorker | None = None
+        self._library_bulk_clear_metadata_worker: LibraryBulkClearMetadataWorker | None = None
         self._library_scan_worker: LibraryScanWorker | None = None
 
         self._status_message_timer = QTimer(self)
@@ -207,9 +216,22 @@ class MainWindow(QMainWindow):
         self._message_icon = QLabel()
         self._message_icon.setFixedSize(22, 22)
         self._message_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._message_text = QLabel("")
-        self._message_text.setWordWrap(True)
-        self._message_text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._message_text = QTextEdit()
+        self._message_text.setReadOnly(True)
+        self._message_text.setAcceptRichText(False)
+        self._message_text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self._message_text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._message_text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._message_text.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        self._message_text.setStyleSheet(
+            "QTextEdit { border: 0; background: transparent; padding: 0; }"
+        )
+        self._message_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._message_text.setMinimumHeight(max(54, self.fontMetrics().height() * 3))
+        self._message_text.setMaximumHeight(max(120, self.fontMetrics().height() * 8))
         mb_row.addWidget(self._message_icon, alignment=Qt.AlignmentFlag.AlignTop)
         mb_row.addWidget(self._message_text, stretch=1)
 
@@ -376,7 +398,7 @@ class MainWindow(QMainWindow):
 
     def _hide_status_message(self) -> None:
         self._message_bar.setVisible(False)
-        self._message_text.setText("")
+        self._message_text.clear()
         self._message_icon.clear()
 
     def _show_status_message(
@@ -384,7 +406,7 @@ class MainWindow(QMainWindow):
         message: str,
         *,
         kind: Literal["success", "error", "info"] = "success",
-        duration_ms: int = 5000,
+        duration_ms: int = 10000,
     ) -> None:
         """Transient bottom bar with icon (check / error / info); hides after ``duration_ms``."""
         style = self.style()
@@ -396,7 +418,8 @@ class MainWindow(QMainWindow):
             icon = style.standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation)
         pm = icon.pixmap(QSize(20, 20))
         self._message_icon.setPixmap(pm)
-        self._message_text.setText(message)
+        self._message_text.setPlainText(message)
+        self._message_text.verticalScrollBar().setValue(0)
         self._message_bar.setVisible(True)
         self._status_message_timer.start(duration_ms)
 
@@ -1602,6 +1625,12 @@ class MainWindow(QMainWindow):
         )
         self.library_bulk_rename_song_btn.clicked.connect(self._library_bulk_rename_to_song_titles)
         btn_row.addWidget(self.library_bulk_rename_song_btn)
+        self.library_bulk_clear_metadata_btn = QPushButton("Clear metadata (selected)")
+        self.library_bulk_clear_metadata_btn.setToolTip(
+            "Removes embedded metadata from each checked file via stream copy (no re-encode)."
+        )
+        self.library_bulk_clear_metadata_btn.clicked.connect(self._library_bulk_clear_metadata)
+        btn_row.addWidget(self.library_bulk_clear_metadata_btn)
         self.library_bulk_infer_btn = QPushButton("Guess selected")
         self.library_bulk_infer_btn.setToolTip(
             "Run AI on checked rows with up to 3 Groq requests at a time; ffprobe and saving stay off the UI "
@@ -1692,6 +1721,11 @@ class MainWindow(QMainWindow):
         if self._library_scan_worker is not None and self._library_scan_worker.isRunning():
             self._show_status_message("Already scanning — please wait.", kind="info")
             return
+        self._library_cancel_prefetch_probes()
+        if self._library_probe_worker is not None:
+            self._library_probe_worker.requestInterruption()
+            self._library_probe_worker.wait(3000)
+            self._library_probe_worker = None
         self._sync_widgets_to_settings()
         self._settings.library_last_folder = root
         self._library_root = root
@@ -1767,8 +1801,90 @@ class MainWindow(QMainWindow):
                     f"Found {n} video{'s' if n != 1 else ''} in this folder.",
                     kind="success",
                 )
+                self._library_start_prefetch_probes()
             else:
                 self._status.setText("")
+
+    def _library_start_prefetch_probes(self) -> None:
+        self._library_cancel_prefetch_probes()
+        pending: list[int] = []
+        for i, row in enumerate(self._library_rows):
+            if row.probe_summary:
+                continue
+            pending.append(i)
+        pending.reverse()
+        self._library_prefetch_pending_probe_rows = pending
+        self._library_prefetch_probe_total = len(pending)
+        self._library_prefetch_probe_done = 0
+        self._library_prefetch_probe_failures = 0
+        if not pending:
+            return
+        self._library_try_start_more_prefetch_probes()
+
+    def _library_cancel_prefetch_probes(self) -> None:
+        self._library_prefetch_pending_probe_rows = []
+        workers = list(self._library_prefetch_probe_workers.values())
+        self._library_prefetch_probe_workers.clear()
+        for w in workers:
+            if w.isRunning():
+                w.requestInterruption()
+                w.wait(3000)
+        self._library_prefetch_probe_total = 0
+        self._library_prefetch_probe_done = 0
+        self._library_prefetch_probe_failures = 0
+
+    def _library_try_start_more_prefetch_probes(self) -> None:
+        while (
+            len(self._library_prefetch_probe_workers) < _MAX_PARALLEL_LIBRARY_PREFETCH_PROBES
+            and self._library_prefetch_pending_probe_rows
+        ):
+            row_idx = self._library_prefetch_pending_probe_rows.pop()
+            if row_idx < 0 or row_idx >= len(self._library_rows):
+                continue
+            path = self._library_rows[row_idx].path
+            w = LibraryProbeWorker(row_idx, path, root=self._library_root, parent=self)
+            self._library_prefetch_probe_workers[row_idx] = w
+            w.finished_ok.connect(self._library_on_prefetch_probe_ok)
+            w.failed.connect(self._library_on_prefetch_probe_fail)
+            w.finished.connect(self._library_on_prefetch_probe_worker_finished)
+            w.start()
+
+    def _library_on_prefetch_probe_worker_finished(self) -> None:
+        sender_obj = self.sender()
+        if sender_obj is None:
+            return
+        for row_idx, worker in list(self._library_prefetch_probe_workers.items()):
+            if worker is sender_obj:
+                self._library_prefetch_probe_workers.pop(row_idx, None)
+                break
+        self._library_try_start_more_prefetch_probes()
+
+    def _library_on_prefetch_probe_ok(
+        self, row_idx: int, author: str, title: str, summary: str, rel_display: str
+    ) -> None:
+        self._library_apply_probe_result(row_idx, author, title, summary, rel_display)
+        self._library_prefetch_probe_done += 1
+        self._library_finish_prefetch_if_complete()
+
+    def _library_on_prefetch_probe_fail(self, _row_idx: int, _err: str) -> None:
+        self._library_prefetch_probe_failures += 1
+        self._library_prefetch_probe_done += 1
+        self._library_finish_prefetch_if_complete()
+
+    def _library_finish_prefetch_if_complete(self) -> None:
+        total = self._library_prefetch_probe_total
+        done = self._library_prefetch_probe_done
+        if total <= 0 or done < total:
+            return
+        if self._library_prefetch_probe_failures > 0:
+            self._show_status_message(
+                f"Loaded metadata for most files ({total - self._library_prefetch_probe_failures}/{total}).",
+                kind="info",
+            )
+        self._library_prefetch_pending_probe_rows = []
+        self._library_prefetch_probe_total = 0
+        self._library_prefetch_probe_done = 0
+        self._library_prefetch_probe_failures = 0
 
     def _library_checked_row_indices(self) -> list[int]:
         out: list[int] = []
@@ -1844,6 +1960,22 @@ class MainWindow(QMainWindow):
     ) -> None:
         if row_idx < 0 or row_idx >= len(self._library_rows):
             return
+        self._library_apply_probe_result(row_idx, author, title, summary, rel_display)
+        row = self._library_rows[row_idx]
+        if self.library_table.currentRow() == row_idx and not self._library_block_edit_signals:
+            self._library_block_edit_signals = True
+            try:
+                self.ui_lib_author.setText(row.author)
+                self.ui_lib_song.setText(row.song_name)
+            finally:
+                self._library_block_edit_signals = False
+        self._status.setText(f"Ready — {row.path.name}")
+
+    def _library_apply_probe_result(
+        self, row_idx: int, author: str, title: str, summary: str, rel_display: str
+    ) -> None:
+        if row_idx < 0 or row_idx >= len(self._library_rows):
+            return
         row = self._library_rows[row_idx]
         row.probe_summary = summary
         if author and not row.author:
@@ -1860,14 +1992,6 @@ class MainWindow(QMainWindow):
             it_a.setText(row.author)
         if it_s is not None:
             it_s.setText(row.song_name)
-        if self.library_table.currentRow() == row_idx and not self._library_block_edit_signals:
-            self._library_block_edit_signals = True
-            try:
-                self.ui_lib_author.setText(row.author)
-                self.ui_lib_song.setText(row.song_name)
-            finally:
-                self._library_block_edit_signals = False
-        self._status.setText(f"Ready — {row.path.name}")
 
     def _library_on_probe_fail(self, row_idx: int, err: str) -> None:
         self._status.setText("")
@@ -1978,6 +2102,14 @@ class MainWindow(QMainWindow):
 
     def _library_start_groq_for_row(self, row_idx: int) -> None:
         row = self._library_rows[row_idx]
+        folder_hint = ""
+        try:
+            if self._library_root is not None:
+                folder_hint = str(row.path.parent.resolve().relative_to(self._library_root.resolve()))
+            else:
+                folder_hint = row.path.parent.name
+        except ValueError:
+            folder_hint = row.path.parent.name
         self._library_set_guess_status(row_idx, "Guessing")
         self._library_infer_groq_slots_busy += 1
         self._library_refresh_infer_status_line()
@@ -1985,6 +2117,7 @@ class MainWindow(QMainWindow):
             self._settings,
             row_idx=row_idx,
             filename=row.path.name,
+            folder_hint=folder_hint,
             path=row.path,
             probe_summary=row.probe_summary or "",
             skip_if_existing_tags=self._library_infer_skip_if_tagged,
@@ -2270,6 +2403,90 @@ class MainWindow(QMainWindow):
     def _library_on_bulk_rename_worker_finished(self) -> None:
         self._library_bulk_rename_worker = None
         self.library_bulk_rename_song_btn.setEnabled(True)
+
+    def _library_bulk_clear_metadata(self) -> None:
+        if self._library_bulk_clear_metadata_worker is not None:
+            self._show_status_message("Bulk metadata clear is already in progress.", kind="info")
+            return
+        checked = self._library_checked_row_indices()
+        if not checked:
+            self._show_status_message("Check one or more rows first.", kind="info")
+            return
+        targets: list[tuple[int, Path]] = []
+        skipped_empty = 0
+        for idx in checked:
+            if 0 <= idx < len(self._library_rows):
+                row = self._library_rows[idx]
+                if not row.author.strip() and not row.song_name.strip():
+                    skipped_empty += 1
+                    self._library_set_guess_status(
+                        idx,
+                        "Skipped",
+                        tooltip="Artist and Song are empty in the table.",
+                    )
+                    continue
+                targets.append((idx, row.path))
+                self._library_set_guess_status(
+                    idx,
+                    "Clearing metadata",
+                    tooltip="Removing embedded metadata from this file.",
+                )
+        if not targets:
+            if skipped_empty > 0:
+                self._show_status_message(
+                    "Nothing to clear: selected rows have empty Artist and Song.",
+                    kind="info",
+                )
+            else:
+                self._show_status_message("Nothing to clear right now.", kind="info")
+            return
+        self.library_bulk_clear_metadata_btn.setEnabled(False)
+        self._status.setText(f"Clearing metadata… {len(targets)} file(s)")
+        w = LibraryBulkClearMetadataWorker(targets, self._settings, parent=self)
+        self._library_bulk_clear_metadata_worker = w
+        w.row_cleared.connect(self._library_on_bulk_clear_metadata_row_cleared)
+        w.row_failed.connect(self._library_on_bulk_clear_metadata_row_failed)
+        w.batch_done.connect(self._library_on_bulk_clear_metadata_batch_done)
+        w.finished.connect(w.deleteLater)
+        w.finished.connect(self._library_on_bulk_clear_metadata_worker_finished)
+        w.start()
+
+    def _library_on_bulk_clear_metadata_row_cleared(self, row_idx: int) -> None:
+        if row_idx < 0 or row_idx >= len(self._library_rows):
+            return
+        row = self._library_rows[row_idx]
+        row.author = ""
+        row.song_name = ""
+        row.probe_summary = ""
+        it_a = self.library_table.item(row_idx, _LIB_COL_ARTIST)
+        it_s = self.library_table.item(row_idx, _LIB_COL_SONG)
+        if it_a is not None:
+            it_a.setText("")
+        if it_s is not None:
+            it_s.setText("")
+        if self.library_table.currentRow() == row_idx:
+            self._library_block_edit_signals = True
+            try:
+                self.ui_lib_author.setText("")
+                self.ui_lib_song.setText("")
+            finally:
+                self._library_block_edit_signals = False
+        self._library_set_guess_status(row_idx, "Metadata cleared")
+
+    def _library_on_bulk_clear_metadata_row_failed(self, row_idx: int, err: str) -> None:
+        self._library_set_guess_status(row_idx, "Clear failed", tooltip=err.strip())
+
+    def _library_on_bulk_clear_metadata_batch_done(self, cleared: int, failed: int) -> None:
+        self._status.setText("")
+        total = cleared + failed
+        self._show_status_message(
+            f"Metadata clear complete ({cleared} cleared, {failed} failed; {total} total).",
+            kind="success" if failed == 0 else "info",
+        )
+
+    def _library_on_bulk_clear_metadata_worker_finished(self) -> None:
+        self._library_bulk_clear_metadata_worker = None
+        self.library_bulk_clear_metadata_btn.setEnabled(True)
 
     @staticmethod
     def _row_index_for_job_id(table: QTableWidget, job_id: str) -> int:
@@ -2906,6 +3123,15 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Download from server failed", err)
 
     def closeEvent(self, event) -> None:
+        self._library_cancel_prefetch_probes()
+        if self._library_probe_worker is not None:
+            self._library_probe_worker.requestInterruption()
+            self._library_probe_worker.wait(3000)
+            self._library_probe_worker = None
+        if self._library_bulk_clear_metadata_worker is not None:
+            self._library_bulk_clear_metadata_worker.requestInterruption()
+            self._library_bulk_clear_metadata_worker.wait(3000)
+            self._library_bulk_clear_metadata_worker = None
         self._persist_all_jobs()
         self._store.close()
         self._dl.stop()

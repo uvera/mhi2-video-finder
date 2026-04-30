@@ -497,6 +497,45 @@ class LibraryBulkRenameToSongWorker(QThread):
         self.batch_done.emit(renamed, skipped, failed)
 
 
+class LibraryBulkClearMetadataWorker(QThread):
+    """Clear metadata for selected library files in the background."""
+
+    row_cleared = pyqtSignal(int)
+    row_failed = pyqtSignal(int, str)
+    batch_done = pyqtSignal(int, int)  # cleared, failed
+
+    def __init__(self, targets: list[tuple[int, Path]], settings: Settings, parent=None) -> None:
+        super().__init__(parent)
+        self._targets = targets
+        self._settings = settings
+
+    def run(self) -> None:
+        from mhi2_video_finder.local_tags import clear_metadata_inplace
+
+        cleared = 0
+        failed = 0
+        for row_idx, path in self._targets:
+            if self.isInterruptionRequested():
+                return
+            try:
+                p = path.expanduser().resolve()
+                if not p.is_file():
+                    failed += 1
+                    self.row_failed.emit(row_idx, "File is missing.")
+                    continue
+                clear_metadata_inplace(
+                    p,
+                    nice_delta=self._settings.ffmpeg_nice,
+                    cpu_limit_percent=self._settings.ffmpeg_cpu_limit_percent,
+                )
+                cleared += 1
+                self.row_cleared.emit(row_idx)
+            except Exception as e:
+                failed += 1
+                self.row_failed.emit(row_idx, str(e).strip() or "Could not clear metadata.")
+        self.batch_done.emit(cleared, failed)
+
+
 class GroqInferWorker(QThread):
     """Background ffprobe (when needed) + Groq inference — never block the GUI thread."""
 
@@ -511,6 +550,7 @@ class GroqInferWorker(QThread):
         *,
         row_idx: int,
         filename: str,
+        folder_hint: str,
         path: Path | None,
         probe_summary: str,
         skip_if_existing_tags: bool = False,
@@ -520,6 +560,7 @@ class GroqInferWorker(QThread):
         self._settings = settings
         self._row_idx = row_idx
         self._filename = filename
+        self._folder_hint = (folder_hint or "").strip()
         self._path = path
         self._probe_summary = (probe_summary or "").strip()
         self._skip_if_existing_tags = skip_if_existing_tags
@@ -562,6 +603,7 @@ class GroqInferWorker(QThread):
             author, song = infer_author_song(
                 self._settings,
                 filename=self._filename,
+                folder_hint=self._folder_hint,
                 probe_summary=summary,
             )
             self.finished_ok.emit(author, song)
