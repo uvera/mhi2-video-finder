@@ -41,7 +41,7 @@ def _fps_to_str(val: Any) -> str:
 def _coerce_field(name: str, raw: str) -> Any:
     if name == "fps":
         return raw.strip()
-    if name in ("embed_metadata", "embed_album_art", "vaapi_cbr", "remote_auto_download"):
+    if name in ("embed_metadata", "embed_album_art", "vaapi_cbr", "remote_auto_download", "groq_enabled"):
         return raw.strip().lower() in ("1", "true", "yes", "on")
     if name in (
         "max_width",
@@ -59,6 +59,11 @@ def _coerce_field(name: str, raw: str) -> Any:
         "vaapi_profile",
     ):
         return int(raw)
+    if name == "groq_temperature":
+        return float(raw.strip())
+    if name == "library_last_folder":
+        r = raw.strip()
+        return None if not r else _expand(r)
     if name in ("raw_cache_dir", "output_dir", "remote_download_dir"):
         return _expand(raw)
     return raw
@@ -124,6 +129,14 @@ class Settings:
         default_factory=lambda: _expand("~/Videos/mhi2-video-finder-remote")
     )
     remote_auto_download: bool = False
+    # Local Library tab: last browsed folder (optional).
+    library_last_folder: Path | None = None
+    # Groq (OpenAI-compatible) for metadata inference.
+    groq_enabled: bool = False
+    groq_api_key: str | None = None
+    groq_model: str = "llama-3.1-8b-instant"
+    groq_base_url: str = "https://api.groq.com/openai/v1"
+    groq_temperature: float = 0.2
 
     def merged_output_dir(self) -> Path:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -155,14 +168,26 @@ def load_settings(path: Path | None = None) -> Settings:
         if name not in data:
             continue
         val = data[name]
-        if name in ("raw_cache_dir", "output_dir", "remote_download_dir") and isinstance(val, str):
+        if name == "library_last_folder":
+            if val is None or (isinstance(val, str) and not str(val).strip()):
+                setattr(s, name, None)
+                continue
+            if isinstance(val, str):
+                val = _expand(val)
+        elif name in ("raw_cache_dir", "output_dir", "remote_download_dir") and isinstance(val, str):
             val = _expand(val)
         if name == "fps":
             val = _fps_to_str(val)
-        if name in ("embed_metadata", "embed_album_art", "vaapi_cbr", "remote_auto_download") and isinstance(
-            val, str
-        ):
+        if name in (
+            "embed_metadata",
+            "embed_album_art",
+            "vaapi_cbr",
+            "remote_auto_download",
+            "groq_enabled",
+        ) and isinstance(val, str):
             val = val.strip().lower() in ("1", "true", "yes", "on")
+        if name == "groq_temperature" and isinstance(val, int | float):
+            val = float(val)
         setattr(s, name, val)
 
     for f in fields(Settings):
@@ -173,6 +198,9 @@ def load_settings(path: Path | None = None) -> Settings:
 
     if s.youtube_api_key is None:
         s.youtube_api_key = os.environ.get("YOUTUBE_API_KEY")
+
+    if s.groq_api_key is None:
+        s.groq_api_key = os.environ.get("GROQ_API_KEY")
 
     s.fps = _fps_to_str(s.fps)
 

@@ -337,5 +337,80 @@ class ConvertService(QObject):
         self._executor.shutdown(wait=True, cancel_futures=True)
 
 
+class LibraryProbeWorker(QThread):
+    """ffprobe in background for Library tab selection."""
+
+    finished_ok = pyqtSignal(int, str, str, str, str)  # row_idx, author, title, summary, rel_display
+    failed = pyqtSignal(int, str)
+
+    def __init__(self, row_idx: int, path: Path, *, root: Path | None = None, parent=None) -> None:
+        super().__init__(parent)
+        self._row_idx = row_idx
+        self._path = path
+        self._root = root
+
+    def run(self) -> None:
+        try:
+            from mhi2_video_finder.ffprobe_util import (
+                ffprobe_json,
+                format_tags_from_probe,
+                summarize_probe,
+            )
+
+            if self.isInterruptionRequested():
+                return
+            data = ffprobe_json(self._path)
+            author, title = format_tags_from_probe(data)
+            summary = summarize_probe(data)
+            rel = str(self._path)
+            if self._root is not None:
+                try:
+                    rel = str(self._path.resolve().relative_to(self._root.resolve()))
+                except ValueError:
+                    rel = str(self._path)
+            self.finished_ok.emit(self._row_idx, author, title, summary, rel)
+        except Exception as e:
+            if self.isInterruptionRequested():
+                return
+            self.failed.emit(self._row_idx, str(e))
+
+
+class GroqInferWorker(QThread):
+    finished_ok = pyqtSignal(str, str)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        filename: str,
+        probe_summary: str,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._settings = settings
+        self._filename = filename
+        self._probe_summary = probe_summary
+
+    def run(self) -> None:
+        try:
+            from mhi2_video_finder.groq_infer import GroqInferenceError, infer_author_song
+
+            if self.isInterruptionRequested():
+                return
+            author, song = infer_author_song(
+                self._settings,
+                filename=self._filename,
+                probe_summary=self._probe_summary,
+            )
+            self.finished_ok.emit(author, song)
+        except GroqInferenceError as e:
+            self.failed.emit(str(e))
+        except Exception as e:
+            if self.isInterruptionRequested():
+                return
+            self.failed.emit(str(e))
+
+
 def new_job_id() -> str:
     return str(uuid.uuid4())

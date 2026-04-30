@@ -159,6 +159,12 @@ def test_load_settings_youtube_key_from_env(monkeypatch: pytest.MonkeyPatch, tmp
     assert s.youtube_api_key == "abc"
 
 
+def test_load_settings_groq_key_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
+    s = load_settings(tmp_path / "nope.toml")
+    assert s.groq_api_key == "gsk_test"
+
+
 def test_load_settings_from_toml(tmp_path: Path) -> None:
     cfg = tmp_path / "config.toml"
     out = tmp_path / "outdir"

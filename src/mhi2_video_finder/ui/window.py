@@ -5,15 +5,17 @@ from __future__ import annotations
 from functools import partial
 from pathlib import Path
 import threading
-from typing import Any
+from typing import Any, Literal
 
 import httpx
-from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -37,6 +39,8 @@ from mhi2_video_finder import __version__
 from mhi2_video_finder.config import Settings, default_config_path, load_settings, save_settings
 from mhi2_video_finder.paste_urls import parse_pasted_video_urls
 from mhi2_video_finder.search import VideoCandidate
+from mhi2_video_finder.local_library import LibraryFileRow, iter_video_files_recursive
+from mhi2_video_finder.local_tags import apply_author_song_and_filename
 from mhi2_video_finder.workflow import (
     ensure_output_dir,
     infer_subdir_name,
@@ -56,7 +60,15 @@ _ENCODER_CHOICES: tuple[tuple[str, str], ...] = (
     ("h264_nvenc (NVIDIA GPU)", "h264_nvenc"),
 )
 from .models import UiJob
-from .workers import BulkUrlResolveWorker, ConvertService, DownloadService, SearchWorker, new_job_id
+from .workers import (
+    BulkUrlResolveWorker,
+    ConvertService,
+    DownloadService,
+    GroqInferWorker,
+    LibraryProbeWorker,
+    SearchWorker,
+    new_job_id,
+)
 
 # Remote-download target subfolder for jobs imported from the daemon (Telegram / API), not from this UI queue.
 _REMOTE_DAEMON_IMPORT_SUBDIR = "daemon-imports"
@@ -128,16 +140,46 @@ class MainWindow(QWidget):
 
         self._store = JobStore()
 
+        self._library_rows: list[LibraryFileRow] = []
+        self._library_root: Path | None = None
+        self._library_populating_table = False
+        self._library_block_edit_signals = False
+        self._library_probe_worker: LibraryProbeWorker | None = None
+        self._library_infer_worker: GroqInferWorker | None = None
+
+        self._status_message_timer = QTimer(self)
+        self._status_message_timer.setSingleShot(True)
+        self._status_message_timer.timeout.connect(self._hide_status_message)
+
         tabs = QTabWidget()
         tabs.addTab(self._build_search_tab(), "Search")
         tabs.addTab(self._build_downloads_tab(), "Downloads")
         tabs.addTab(self._build_convert_tab(), "Convert")
+        tabs.addTab(self._build_library_tab(), "Library")
         tabs.addTab(self._build_settings_tab(), "Settings")
 
         root = QVBoxLayout(self)
         root.addWidget(tabs)
+
+        self._message_bar = QFrame()
+        self._message_bar.setVisible(False)
+        self._message_bar.setStyleSheet(
+            "QFrame { background-color: palette(window); border-top: 1px solid palette(mid); }"
+        )
+        mb_row = QHBoxLayout(self._message_bar)
+        mb_row.setContentsMargins(10, 6, 10, 6)
+        mb_row.setSpacing(10)
+        self._message_icon = QLabel()
+        self._message_icon.setFixedSize(22, 22)
+        self._message_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._message_text = QLabel("")
+        self._message_text.setWordWrap(True)
+        mb_row.addWidget(self._message_icon, alignment=Qt.AlignmentFlag.AlignTop)
+        mb_row.addWidget(self._message_text, stretch=1)
+        root.addWidget(self._message_bar)
+
         self._status = QLabel("")
-        self._status.setStyleSheet("color: palette(mid);")
+        self._status.setStyleSheet("color: palette(mid); padding: 2px 6px;")
         root.addWidget(self._status)
         if self._remote is not None:
             self._remote.user_status.connect(self._status.setText)
@@ -157,6 +199,32 @@ class MainWindow(QWidget):
     def _poll_remote_daemon_jobs(self) -> None:
         if self._remote is not None and self._use_remote:
             self._remote.fetch_recent_jobs_async(200)
+
+    def _hide_status_message(self) -> None:
+        self._message_bar.setVisible(False)
+        self._message_text.setText("")
+        self._message_icon.clear()
+
+    def _show_status_message(
+        self,
+        message: str,
+        *,
+        kind: Literal["success", "error", "info"] = "success",
+        duration_ms: int = 5000,
+    ) -> None:
+        """Transient bottom bar with icon (check / error / info); hides after ``duration_ms``."""
+        style = self.style()
+        if kind == "success":
+            icon = style.standardIcon(QStyle.StandardPixmap.SP_DialogYesButton)
+        elif kind == "error":
+            icon = style.standardIcon(QStyle.StandardPixmap.SP_MessageBoxCritical)
+        else:
+            icon = style.standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation)
+        pm = icon.pixmap(QSize(20, 20))
+        self._message_icon.setPixmap(pm)
+        self._message_text.setText(message)
+        self._message_bar.setVisible(True)
+        self._status_message_timer.start(duration_ms)
 
     def _remote_sync_import_root(self) -> Path:
         return ensure_output_dir(
@@ -504,6 +572,15 @@ class MainWindow(QWidget):
         self.ui_vaapi_cbr.setChecked(self._settings.vaapi_cbr)
         self._update_vaapi_options_visibility()
 
+        lf = self._settings.library_last_folder
+        self.ui_library_folder.setText(str(lf) if lf is not None else "")
+
+        self.ui_groq_enabled.setChecked(self._settings.groq_enabled)
+        self.ui_groq_api_key.setText((self._settings.groq_api_key or "").strip())
+        self.ui_groq_model.setText((self._settings.groq_model or "").strip() or "llama-3.1-8b-instant")
+        self.ui_groq_base_url.setText((self._settings.groq_base_url or "").strip())
+        self.ui_groq_temperature.setValue(float(self._settings.groq_temperature))
+
     def _sync_widgets_to_settings(self) -> None:
         pb = self.ui_processing_backend.currentData()
         self._settings.processing_backend = pb if pb in ("local", "remote") else "local"
@@ -526,6 +603,16 @@ class MainWindow(QWidget):
         dev = self.ui_vaapi_device.text().strip()
         self._settings.vaapi_device = dev if dev else "/dev/dri/renderD128"
         self._settings.vaapi_cbr = self.ui_vaapi_cbr.isChecked()
+
+        lib = self.ui_library_folder.text().strip()
+        self._settings.library_last_folder = Path(lib).expanduser().resolve() if lib else None
+
+        self._settings.groq_enabled = self.ui_groq_enabled.isChecked()
+        ga = self.ui_groq_api_key.text().strip()
+        self._settings.groq_api_key = ga if ga else None
+        self._settings.groq_model = self.ui_groq_model.text().strip() or "llama-3.1-8b-instant"
+        self._settings.groq_base_url = self.ui_groq_base_url.text().strip() or "https://api.groq.com/openai/v1"
+        self._settings.groq_temperature = float(self.ui_groq_temperature.value())
 
     def _update_vaapi_options_visibility(self) -> None:
         data = self.ui_video_encoder.currentData()
@@ -812,20 +899,46 @@ class MainWindow(QWidget):
         qg.addWidget(self.ui_max_parallel_cv, 1, 1)
         lay.addWidget(qbox)
 
+        groq_box = QGroupBox("AI assistant (Library tab)")
+        gg = QGridLayout(groq_box)
+        self.ui_groq_enabled = QCheckBox("Turn on AI guesses for artist & song")
+        gg.addWidget(self.ui_groq_enabled, 0, 0, 1, 2)
+        gg.addWidget(QLabel("API key:"), 1, 0)
+        self.ui_groq_api_key = QLineEdit()
+        self.ui_groq_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.ui_groq_api_key.setPlaceholderText("gsk_… or set GROQ_API_KEY")
+        gg.addWidget(self.ui_groq_api_key, 1, 1)
+        gg.addWidget(QLabel("Model:"), 2, 0)
+        self.ui_groq_model = QLineEdit()
+        self.ui_groq_model.setPlaceholderText("llama-3.1-8b-instant")
+        gg.addWidget(self.ui_groq_model, 2, 1)
+        gg.addWidget(QLabel("Base URL:"), 3, 0)
+        self.ui_groq_base_url = QLineEdit()
+        self.ui_groq_base_url.setPlaceholderText("https://api.groq.com/openai/v1")
+        gg.addWidget(self.ui_groq_base_url, 3, 1)
+        gg.addWidget(QLabel("Temperature:"), 4, 0)
+        self.ui_groq_temperature = QDoubleSpinBox()
+        self.ui_groq_temperature.setRange(0.0, 2.0)
+        self.ui_groq_temperature.setSingleStep(0.05)
+        self.ui_groq_temperature.setDecimals(2)
+        gg.addWidget(self.ui_groq_temperature, 4, 1)
+        lay.addWidget(groq_box)
+
         hint = QLabel(
             "Uses the config file path from the Search tab (or the default XDG path if empty). "
             "Apply updates workers for this session; Save writes merged values into config.toml "
-            "(video_encoder, embed_metadata, embed_album_art, vaapi_*, ffmpeg_*, parallel queues)."
+            "(video_encoder, embed_metadata, embed_album_art, vaapi_*, ffmpeg_*, parallel queues, "
+            "library_last_folder, AI assistant / Groq settings)."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: palette(mid);")
         lay.addWidget(hint)
 
         row = QHBoxLayout()
-        apply_btn = QPushButton("Apply to session")
+        apply_btn = QPushButton("Use these settings now")
         apply_btn.clicked.connect(self._apply_session_settings)
         row.addWidget(apply_btn)
-        save_btn = QPushButton("Save to config file")
+        save_btn = QPushButton("Save for next time")
         save_btn.clicked.connect(self._save_settings_to_file)
         row.addWidget(save_btn)
         row.addStretch()
@@ -1207,6 +1320,371 @@ class MainWindow(QWidget):
         ch.resizeSection(0, 28)
         lay.addWidget(self.convert_table)
         return w
+
+    def _build_library_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Folder:"))
+        self.ui_library_folder = QLineEdit()
+        self.ui_library_folder.setPlaceholderText("Path to a folder of videos (subfolders included)")
+        if self._settings.library_last_folder is not None:
+            self.ui_library_folder.setText(str(self._settings.library_last_folder))
+        br = QPushButton("Choose folder…")
+        br.clicked.connect(self._browse_library_folder)
+        top.addWidget(self.ui_library_folder, stretch=1)
+        top.addWidget(br)
+        scan_btn = QPushButton("Find all videos")
+        scan_btn.setToolTip("Discover every video file under this folder, including nested folders.")
+        scan_btn.clicked.connect(self._library_scan)
+        top.addWidget(scan_btn)
+        lay.addLayout(top)
+
+        self.library_table = QTableWidget(0, 3)
+        self.library_table.setHorizontalHeaderLabels(["File", "Artist", "Song"])
+        hh = self.library_table.horizontalHeader()
+        hh.setStretchLastSection(True)
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.library_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.library_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.library_table.itemSelectionChanged.connect(self._library_on_selection_changed)
+        lay.addWidget(self.library_table, stretch=1)
+
+        edit_box = QGroupBox("This video")
+        eg = QGridLayout(edit_box)
+        self.ui_lib_author = QLineEdit()
+        self.ui_lib_author.setPlaceholderText("Artist")
+        self.ui_lib_song = QLineEdit()
+        self.ui_lib_song.setPlaceholderText("Song title")
+        self.ui_lib_stem = QLineEdit()
+        self.ui_lib_stem.setPlaceholderText("File name (no extension — we’ll keep the same type)")
+        eg.addWidget(QLabel("Artist:"), 0, 0)
+        eg.addWidget(self.ui_lib_author, 0, 1)
+        eg.addWidget(QLabel("Song:"), 1, 0)
+        eg.addWidget(self.ui_lib_song, 1, 1)
+        eg.addWidget(QLabel("Rename file to:"), 2, 0)
+        eg.addWidget(self.ui_lib_stem, 2, 1)
+        self.ui_lib_author.textChanged.connect(self._library_on_edit_changed)
+        self.ui_lib_song.textChanged.connect(self._library_on_edit_changed)
+        self.ui_lib_stem.textChanged.connect(self._library_on_edit_changed)
+        lay.addWidget(edit_box)
+
+        btn_row = QHBoxLayout()
+        self.library_infer_btn = QPushButton("Guess artist & song")
+        self.library_infer_btn.setToolTip(
+            "Fill Artist and Song using Groq from the file name and media info. "
+            "Add your API key under Settings → AI assistant."
+        )
+        self.library_infer_btn.clicked.connect(self._library_infer_groq)
+        btn_row.addWidget(self.library_infer_btn)
+        self.library_apply_btn = QPushButton("Save to this file")
+        self.library_apply_btn.setToolTip(
+            "Write the tags into the file and rename it if you changed the name above. "
+            "Uses a quick copy (no re-encode)."
+        )
+        self.library_apply_btn.clicked.connect(self._library_apply_changes)
+        btn_row.addWidget(self.library_apply_btn)
+        btn_row.addStretch()
+        lay.addLayout(btn_row)
+
+        lib_hint = QLabel(
+            "Pick a folder and choose Find all videos. Click a row to load details, then edit by hand or "
+            "use Guess artist & song. Configure the AI under Settings → AI assistant (or set GROQ_API_KEY)."
+        )
+        lib_hint.setWordWrap(True)
+        lib_hint.setStyleSheet("color: palette(mid);")
+        lay.addWidget(lib_hint)
+        return w
+
+    def _browse_library_folder(self) -> None:
+        start = self.ui_library_folder.text().strip() or str(Path.home())
+        d = QFileDialog.getExistingDirectory(self, "Where are your videos?", start)
+        if d:
+            self.ui_library_folder.setText(d)
+
+    def _library_scan(self) -> None:
+        raw = self.ui_library_folder.text().strip()
+        if not raw:
+            self._show_status_message("Choose or paste a folder above first.", kind="info")
+            return
+        root = Path(raw).expanduser().resolve()
+        if not root.is_dir():
+            self._show_status_message(
+                "That path isn’t a folder — check the path and try again.",
+                kind="error",
+            )
+            return
+        self._sync_widgets_to_settings()
+        self._settings.library_last_folder = root
+        paths = iter_video_files_recursive(root)
+        self._library_root = root
+        self._library_rows = [LibraryFileRow(p) for p in paths]
+        self._library_fill_table()
+        n = len(paths)
+        self._status.setText(f"Library: {n} video(s) in {root.name}")
+        self._show_status_message(
+            f"Found {n} video{'s' if n != 1 else ''} in this folder.",
+            kind="success",
+        )
+
+    def _library_fill_table(self) -> None:
+        self._library_populating_table = True
+        try:
+            self.library_table.setRowCount(len(self._library_rows))
+            root = self._library_root
+            for i, row in enumerate(self._library_rows):
+                if root is not None:
+                    try:
+                        rel = str(row.path.resolve().relative_to(root.resolve()))
+                    except ValueError:
+                        rel = row.path.name
+                else:
+                    rel = str(row.path)
+                it0 = QTableWidgetItem(rel)
+                it0.setData(Qt.ItemDataRole.UserRole, str(row.path))
+                it0.setToolTip(str(row.path))
+                self.library_table.setItem(i, 0, it0)
+                self.library_table.setItem(i, 1, QTableWidgetItem(row.author))
+                self.library_table.setItem(i, 2, QTableWidgetItem(row.song_name))
+        finally:
+            self._library_populating_table = False
+
+    def _library_current_row_index(self) -> int:
+        r = self.library_table.currentRow()
+        if r < 0 or r >= len(self._library_rows):
+            return -1
+        return r
+
+    def _library_on_selection_changed(self) -> None:
+        if self._library_populating_table:
+            return
+        r = self._library_current_row_index()
+        if r < 0:
+            return
+        row = self._library_rows[r]
+        self._library_block_edit_signals = True
+        try:
+            self.ui_lib_author.setText(row.author)
+            self.ui_lib_song.setText(row.song_name)
+            self.ui_lib_stem.setText(row.filename_stem)
+        finally:
+            self._library_block_edit_signals = False
+        self._library_start_probe(r)
+
+    def _library_start_probe(self, row_idx: int) -> None:
+        if self._library_probe_worker is not None:
+            self._library_probe_worker.requestInterruption()
+            self._library_probe_worker.wait(3000)
+            self._library_probe_worker = None
+        if row_idx < 0 or row_idx >= len(self._library_rows):
+            return
+        path = self._library_rows[row_idx].path
+        self._status.setText(f"Reading {path.name}…")
+        w = LibraryProbeWorker(row_idx, path, root=self._library_root, parent=self)
+        self._library_probe_worker = w
+        w.finished_ok.connect(self._library_on_probe_ok)
+        w.failed.connect(self._library_on_probe_fail)
+        w.finished.connect(self._library_probe_finished_cleanup)
+        w.start()
+
+    def _library_probe_finished_cleanup(self) -> None:
+        self._library_probe_worker = None
+
+    def _library_on_probe_ok(
+        self, row_idx: int, author: str, title: str, summary: str, rel_display: str
+    ) -> None:
+        if row_idx < 0 or row_idx >= len(self._library_rows):
+            return
+        row = self._library_rows[row_idx]
+        row.probe_summary = summary
+        if author and not row.author:
+            row.author = author
+        if title and not row.song_name:
+            row.song_name = title
+        it0 = self.library_table.item(row_idx, 0)
+        if it0 is not None:
+            it0.setText(rel_display)
+            it0.setToolTip(str(row.path))
+        it_a = self.library_table.item(row_idx, 1)
+        it_s = self.library_table.item(row_idx, 2)
+        if it_a is not None:
+            it_a.setText(row.author)
+        if it_s is not None:
+            it_s.setText(row.song_name)
+        if self.library_table.currentRow() == row_idx and not self._library_block_edit_signals:
+            self._library_block_edit_signals = True
+            try:
+                self.ui_lib_author.setText(row.author)
+                self.ui_lib_song.setText(row.song_name)
+            finally:
+                self._library_block_edit_signals = False
+        self._status.setText(f"Ready — {row.path.name}")
+
+    def _library_on_probe_fail(self, row_idx: int, err: str) -> None:
+        self._status.setText("")
+        self._show_status_message(f"Could not read media info: {err}", kind="error")
+
+    def _library_on_edit_changed(self, *_args: object) -> None:
+        if self._library_block_edit_signals:
+            return
+        r = self._library_current_row_index()
+        if r < 0:
+            return
+        row = self._library_rows[r]
+        row.author = self.ui_lib_author.text().strip()
+        row.song_name = self.ui_lib_song.text().strip()
+        row.filename_stem = self.ui_lib_stem.text().strip()
+        a_item = self.library_table.item(r, 1)
+        s_item = self.library_table.item(r, 2)
+        if a_item is not None:
+            a_item.setText(row.author)
+        if s_item is not None:
+            s_item.setText(row.song_name)
+
+    def _library_infer_groq(self) -> None:
+        self._sync_widgets_to_settings()
+        r = self._library_current_row_index()
+        if r < 0:
+            self._show_status_message("Select a video in the list first.", kind="info")
+            return
+        row = self._library_rows[r]
+        key = (self._settings.groq_api_key or "").strip()
+        if not key:
+            self._show_status_message(
+                "Add your API key under Settings → AI assistant (or set GROQ_API_KEY).",
+                kind="info",
+            )
+            return
+        if self._library_infer_worker is not None:
+            self._show_status_message("Already asking the AI — one moment.", kind="info")
+            return
+        if not row.probe_summary:
+            try:
+                from mhi2_video_finder.ffprobe_util import ffprobe_json, summarize_probe
+
+                data = ffprobe_json(row.path)
+                row.probe_summary = summarize_probe(data)
+            except Exception as e:
+                self._show_status_message(f"Could not read this file: {e}", kind="error")
+                return
+        self._show_status_message("Hang tight — asking the AI…", kind="info")
+        self._status.setText("Asking Groq…")
+        w = GroqInferWorker(
+            self._settings,
+            filename=row.path.name,
+            probe_summary=row.probe_summary,
+            parent=self,
+        )
+        self._library_infer_worker = w
+        w.finished_ok.connect(self._library_on_infer_ok)
+        w.failed.connect(self._library_on_infer_fail)
+        w.finished.connect(self._library_infer_finished_cleanup)
+        w.start()
+
+    def _library_infer_finished_cleanup(self) -> None:
+        self._library_infer_worker = None
+
+    def _library_on_infer_ok(self, author: str, song: str) -> None:
+        r = self._library_current_row_index()
+        if r < 0:
+            self._show_status_message(
+                "AI finished — select a row to see the result.",
+                kind="info",
+            )
+            self._status.setText("")
+            return
+        row = self._library_rows[r]
+        if author:
+            row.author = author
+        if song:
+            row.song_name = song
+        self._library_block_edit_signals = True
+        try:
+            self.ui_lib_author.setText(row.author)
+            self.ui_lib_song.setText(row.song_name)
+        finally:
+            self._library_block_edit_signals = False
+        a_item = self.library_table.item(r, 1)
+        s_item = self.library_table.item(r, 2)
+        if a_item is not None:
+            a_item.setText(row.author)
+        if s_item is not None:
+            s_item.setText(row.song_name)
+        bits = [x for x in (row.author, row.song_name) if x]
+        if bits:
+            self._show_status_message(
+                f"Here’s a guess: {' · '.join(bits)}. You can still edit it above.",
+                kind="success",
+            )
+        else:
+            self._show_status_message(
+                "The AI wasn’t sure — try typing the artist and song yourself.",
+                kind="info",
+            )
+        self._status.setText("")
+
+    def _library_on_infer_fail(self, err: str) -> None:
+        self._status.setText("")
+        self._show_status_message(err.strip() or "Could not reach the AI.", kind="error")
+
+    def _library_apply_changes(self) -> None:
+        self._sync_widgets_to_settings()
+        r = self._library_current_row_index()
+        if r < 0:
+            self._show_status_message("Select a video in the list first.", kind="info")
+            return
+        row = self._library_rows[r]
+        row.author = self.ui_lib_author.text().strip()
+        row.song_name = self.ui_lib_song.text().strip()
+        row.filename_stem = self.ui_lib_stem.text().strip()
+        path = row.path
+        if not path.is_file():
+            self._show_status_message(
+                "That file isn’t there anymore — try scanning the folder again.",
+                kind="error",
+            )
+            return
+        self._status.setText("Saving…")
+        try:
+            new_path = apply_author_song_and_filename(
+                path,
+                author=row.author,
+                song_name=row.song_name,
+                filename_stem=row.filename_stem,
+                settings_nice=self._settings.ffmpeg_nice,
+                settings_cpu_limit=self._settings.ffmpeg_cpu_limit_percent,
+            )
+        except Exception as e:
+            self._status.setText("")
+            self._show_status_message(str(e).strip() or "Could not save the file.", kind="error")
+            return
+        row.path = new_path
+        row.filename_stem = new_path.stem
+        it0 = self.library_table.item(r, 0)
+        if it0 is not None:
+            it0.setData(Qt.ItemDataRole.UserRole, str(new_path))
+            if self._library_root is not None:
+                try:
+                    rel = str(new_path.resolve().relative_to(self._library_root.resolve()))
+                except ValueError:
+                    rel = new_path.name
+            else:
+                rel = new_path.name
+            it0.setText(rel)
+            it0.setToolTip(str(new_path))
+        self._library_block_edit_signals = True
+        try:
+            self.ui_lib_stem.setText(row.filename_stem)
+        finally:
+            self._library_block_edit_signals = False
+        it_a = self.library_table.item(r, 1)
+        it_s = self.library_table.item(r, 2)
+        if it_a is not None:
+            it_a.setText(row.author)
+        if it_s is not None:
+            it_s.setText(row.song_name)
+        self._show_status_message(f"All set — saved “{new_path.name}”.", kind="success")
+        self._status.setText("")
 
     @staticmethod
     def _row_index_for_job_id(table: QTableWidget, job_id: str) -> int:
