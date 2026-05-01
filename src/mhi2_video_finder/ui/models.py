@@ -36,6 +36,12 @@ class UiJob:
     convert_percent: float = 0.0
     convert_indeterminate: bool = False
     convert_error: str = ""
+    # Convert tab metadata editor state (not tied to download/convert pipeline).
+    meta_artist: str = ""
+    meta_title: str = ""
+    meta_filename_stem: str = ""
+    meta_probe_summary: str = ""
+    meta_guess_status: str = "None"
 
     def download_done(self) -> bool:
         return self.download_status == "done"
