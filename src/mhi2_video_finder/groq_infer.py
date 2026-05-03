@@ -17,7 +17,34 @@ class GroqInferenceError(Exception):
 
 _SYSTEM_PROMPT = """You help identify music video files. Given a filename, optional folder/path hint, and technical media summary, \
 infer the performing artist and song title. Respond with a single JSON object only, no markdown, with keys:
-"author" (string) and "song_name" (string). Use empty string if unknown. Do not include other keys."""
+"author" (string) and "song_name" (string). Use empty string if unknown. Do not include other keys.
+CRITICAL CONSTRAINT: For "author" and "song_name", only use words/tokens that already exist in the filename.
+Do not invent, correct, translate, or expand words beyond the filename tokens.
+You may reorder filename tokens, and you may omit tokens.
+You may use spaces and punctuation for formatting, but every alphanumeric token in output must be from the filename.
+If no reliable answer can be formed from filename tokens alone, return empty string."""
+
+
+def _filename_tokens(filename: str) -> set[str]:
+    return {m.group(0).lower() for m in re.finditer(r"[A-Za-z0-9]+", filename or "")}
+
+
+def _restrict_to_filename_tokens(value: str, allowed_tokens: set[str]) -> str:
+    """Keep only alnum tokens that already appear in filename."""
+    parts = re.findall(r"[A-Za-z0-9]+|[^A-Za-z0-9]+", value or "")
+    kept: list[str] = []
+    for part in parts:
+        if re.fullmatch(r"[A-Za-z0-9]+", part):
+            if part.lower() in allowed_tokens:
+                kept.append(part)
+        else:
+            # Keep separators only between kept tokens.
+            if kept:
+                kept.append(part)
+    restricted = "".join(kept).strip()
+    # Avoid dangling punctuation after token filtering.
+    restricted = re.sub(r"^[^\w]+|[^\w]+$", "", restricted)
+    return restricted.strip()
 
 
 def _parse_json_object(content: str) -> dict[str, Any]:
@@ -60,7 +87,9 @@ def infer_author_song(
     url = f"{base}/chat/completions"
 
     hint = (folder_hint or "").strip()
+    allowed_tokens = _filename_tokens(filename)
     user_msg = f"filename: {filename}\n"
+    user_msg += f"filename_tokens: {', '.join(sorted(allowed_tokens)) or '(none)'}\n"
     if hint:
         user_msg += f"folder_hint: {hint}\n"
     user_msg += f"\nffprobe_summary:\n{probe_summary or '(none)'}\n"
@@ -116,4 +145,6 @@ def infer_author_song(
     data = _parse_json_object(content)
     author = str(data.get("author") or "").strip()
     song = str(data.get("song_name") or data.get("song") or "").strip()
+    author = _restrict_to_filename_tokens(author, allowed_tokens)
+    song = _restrict_to_filename_tokens(song, allowed_tokens)
     return author, song
