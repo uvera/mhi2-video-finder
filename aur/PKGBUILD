@@ -7,7 +7,7 @@
 # (.gitattributes export-ignore). Copy PKGBUILD + .SRCINFO into your AUR clone and push.
 
 pkgname=mhi2-video-finder
-pkgver=0.13.0
+pkgver=0.14.1
 pkgrel=1
 pkgdesc="YouTube music-video search, download (yt-dlp), and MHI2-oriented MP4 transcode"
 arch=('any')
@@ -16,8 +16,8 @@ license=('MIT')
 depends=('python' 'ffmpeg' 'python-pyqt6' 'python-httpx' 'python-typer' 'yt-dlp')
 makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel')
 install=mhi2-video-finder.install
-source=("${pkgname}-${pkgver}.tar.gz::https://github.com/uvera/mhi2-video-finder/archive/refs/tags/v0.13.0.tar.gz")
-sha256sums=('6e04df4fd5efe2aab9df06ff617f4b247e066d4fe1d2f18364c52f705023dbe5')
+source=("${pkgname}-${pkgver}.tar.gz::https://github.com/uvera/mhi2-video-finder/archive/refs/tags/v0.14.1.tar.gz")
+sha256sums=('553de1f301bf6bd37b31a2df7839270536f60da18581cdb81e6e85c377cead56')
 
 build() {
   cd "${pkgname}-${pkgver}"
