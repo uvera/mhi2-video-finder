@@ -1,7 +1,3 @@
-# Compatibility build recipe for tooling that still builds in pacman/.
-# Canonical packaging file is ../PKGBUILD (run from repo root: makepkg -si).
-# release-github-aur.sh syncs ../PKGBUILD into this file before release builds.
-
 pkgname=mhi2-video-finder
 pkgver=0.14.2
 pkgrel=1
@@ -12,23 +8,25 @@ license=('MIT')
 depends=('python' 'ffmpeg' 'python-pyqt6' 'python-httpx' 'python-typer' 'yt-dlp')
 makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel')
 install=mhi2-video-finder.install
+_workdir="${startdir}/.makepkg/${pkgname}-${pkgver}"
 
 prepare() {
-	mkdir -p "${srcdir}/${pkgname}-${pkgver}"
-	cp -a "${startdir}/../pyproject.toml" \
-		"${startdir}/../README.md" \
-		"${startdir}/../src" \
-		"${startdir}/../mhi2-video-finder.desktop" \
-		"${srcdir}/${pkgname}-${pkgver}/"
+	rm -rf "${_workdir}"
+	mkdir -p "${_workdir}"
+	cp -a "${startdir}/pyproject.toml" \
+		"${startdir}/README.md" \
+		"${startdir}/src" \
+		"${startdir}/mhi2-video-finder.desktop" \
+		"${_workdir}/"
 }
 
 build() {
-	cd "${pkgname}-${pkgver}"
+	cd "${_workdir}"
 	# Use system Python so a project .venv on PATH is not picked up.
 	/usr/bin/python -m build --wheel --no-isolation
 }
 
 package() {
-	cd "${pkgname}-${pkgver}"
+	cd "${_workdir}"
 	/usr/bin/python -m installer --destdir="$pkgdir" --prefix=/usr dist/*.whl
 }

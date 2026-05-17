@@ -20,12 +20,14 @@ sudo pacman -S ffmpeg
 
 ### Arch Linux (pacman, from this checkout)
 
-From the `pacman/` directory so build artifacts stay out of the Python `src/` tree:
+From the repository root:
 
 ```bash
-cd pacman
 makepkg -si
 ```
+
+`makepkg -si` builds `*.pkg.tar.zst` and then installs it. If you only want to build the
+package artifact without installing, use `makepkg -s` (or plain `makepkg`).
 
 This installs `/usr/bin/mhi2-video-finder`, `/usr/bin/mhi2-video-finder-ui`, and the desktop entry system-wide.
 
@@ -189,7 +191,7 @@ remote_auto_download = false
 Upstream ships an AUR-style recipe under [`aur/`](aur/):
 
 - Edit [`aur/PKGBUILD`](aur/PKGBUILD): set `url=` and `source=` to your real GitHub repo (replace `YOUR_GITHUB_USER`), then run `makepkg --printsrcinfo > aur/.SRCINFO` (or use Docker as in the script below).
-- [`scripts/release-github-aur.sh`](scripts/release-github-aur.sh) — after `gh auth login`, runs `python -m build` (wheel + sdist, same as [`scripts/package-release.sh`](scripts/package-release.sh)), pushes tag `v<version>`, downloads the **GitHub** tag tarball, writes `sha256sums` into `aur/PKGBUILD`, regenerates `aur/.SRCINFO`, commits and pushes those files when they change (and moves the tag), builds a **pacman** package from [`pacman/PKGBUILD`](pacman/PKGBUILD) (must match `pyproject.toml` `version`), then creates a GitHub release attaching the wheel, sdist, and `.pkg.tar.zst`. The repo uses [`.gitattributes`](.gitattributes) `aur/ export-ignore` so the tag archive hash stays stable when only AUR metadata changes (same idea as [hikvision-viewer](https://github.com/uvera/hikvision-viewer)).
+- [`scripts/release-github-aur.sh`](scripts/release-github-aur.sh) — after `gh auth login`, runs `python -m build` (wheel + sdist, same as [`scripts/package-release.sh`](scripts/package-release.sh)), pushes tag `v<version>`, downloads the **GitHub** tag tarball, writes `sha256sums` into `aur/PKGBUILD`, regenerates `aur/.SRCINFO`, commits and pushes those files when they change (and moves the tag), builds a `.pkg.tar.zst` from the root [`PKGBUILD`](PKGBUILD) (synced into [`pacman/PKGBUILD`](pacman/PKGBUILD) for compatibility; `pkgver` must match `pyproject.toml`), then creates a GitHub release attaching the wheel, sdist, and `.pkg.tar.zst`. The repo uses [`.gitattributes`](.gitattributes) `aur/ export-ignore` so the tag archive hash stays stable when only AUR metadata changes (same idea as [hikvision-viewer](https://github.com/uvera/hikvision-viewer)).
 - [`scripts/package-release.sh`](scripts/package-release.sh) — local `python -m build` (wheel + sdist) only.
 - [`scripts/bump-version.sh`](scripts/bump-version.sh) — bump semantic version across `pyproject.toml`, `src/mhi2_video_finder/__init__.py`, and `pacman/PKGBUILD`: `scripts/bump-version.sh major|minor|patch`.
 

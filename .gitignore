@@ -12,6 +12,13 @@ pacman/src/
 pacman/*.pkg.tar.zst
 pacman/*.pkg.tar.zst.sig
 
+# makepkg local install from repo root (PKGBUILD)
+.makepkg/
+pkg/
+src/mhi2-video-finder-*/
+*.pkg.tar.zst
+*.pkg.tar.zst.sig
+
 # makepkg from aur/PKGBUILD (release-github-aur.sh)
 aur/pkg/
 aur/src/

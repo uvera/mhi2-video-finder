@@ -62,23 +62,27 @@ root = Path(sys.argv[2])
 paths = {
     "pyproject": root / "pyproject.toml",
     "init": root / "src" / "mhi2_video_finder" / "__init__.py",
+    "root_pkgbuild": root / "PKGBUILD",
     "pacman": root / "pacman" / "PKGBUILD",
 }
 
 pyproject_text = paths["pyproject"].read_text()
 init_text = paths["init"].read_text()
+root_pkgbuild_text = paths["root_pkgbuild"].read_text()
 pacman_text = paths["pacman"].read_text()
 
 pyproject_match = re.search(r'^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*$', pyproject_text, flags=re.M)
 init_match = re.search(r'^__version__\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*$', init_text, flags=re.M)
+root_pkgbuild_match = re.search(r"^pkgver=([0-9]+\.[0-9]+\.[0-9]+)\s*$", root_pkgbuild_text, flags=re.M)
 pacman_match = re.search(r"^pkgver=([0-9]+\.[0-9]+\.[0-9]+)\s*$", pacman_text, flags=re.M)
 
-if not pyproject_match or not init_match or not pacman_match:
+if not pyproject_match or not init_match or not root_pkgbuild_match or not pacman_match:
     raise SystemExit("Failed to read current versions from one or more files")
 
 current_versions = {
     "pyproject.toml": pyproject_match.group(1),
     "src/mhi2_video_finder/__init__.py": init_match.group(1),
+    "PKGBUILD": root_pkgbuild_match.group(1),
     "pacman/PKGBUILD": pacman_match.group(1),
 }
 
@@ -101,6 +105,12 @@ init_text = replace_one(
     f'__version__ = "{new_version}"',
     "src/mhi2_video_finder/__init__.py",
 )
+root_pkgbuild_text = replace_one(
+    root_pkgbuild_text,
+    r"^pkgver=[0-9]+\.[0-9]+\.[0-9]+\s*$",
+    f"pkgver={new_version}",
+    "PKGBUILD",
+)
 pacman_text = replace_one(
     pacman_text,
     r"^pkgver=[0-9]+\.[0-9]+\.[0-9]+\s*$",
@@ -110,6 +120,7 @@ pacman_text = replace_one(
 
 paths["pyproject"].write_text(pyproject_text)
 paths["init"].write_text(init_text)
+paths["root_pkgbuild"].write_text(root_pkgbuild_text)
 paths["pacman"].write_text(pacman_text)
 
 print(f"Bumped version ({kind}): {old_version} -> {new_version}")

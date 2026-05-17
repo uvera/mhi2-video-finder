@@ -7,8 +7,9 @@
 # The tag may be force-moved to the AUR checksum commit; keep aur/ in .gitattributes export-ignore
 # so the GitHub archive content/hash does not change when only aur/ metadata is updated.
 #
-# The GitHub release .pkg.tar.zst is built from pacman/PKGBUILD (local tree), not aur/PKGBUILD.
-# Building from aur/ after a tag move can fail sha256 verification against the GitHub tarball.
+# The GitHub release .pkg.tar.zst is built from the root PKGBUILD (synced into pacman/),
+# not aur/PKGBUILD. Building from aur/ after a tag move can fail sha256 verification
+# against the GitHub tarball.
 #
 # Environment (optional):
 #   SKIP_BUILD=1            — skip python -m build (wheel + sdist)
@@ -127,15 +128,22 @@ PY
 	echo "Updated aur/PKGBUILD and aur/.SRCINFO (pkgrel=${pkgrel}, sha256=${sum})."
 }
 
-verify_pacman_pkgver_matches_pyproject() {
+verify_root_pkgver_matches_pyproject() {
 	local pv
-	pv="$(grep -m1 '^pkgver=' "$ROOT/pacman/PKGBUILD" | sed -E 's/^pkgver=([0-9.]+).*/\1/')"
-	[[ "$pv" == "$VERSION" ]] || die "pacman/PKGBUILD pkgver (${pv}) must match pyproject.toml (${VERSION})"
+	pv="$(grep -m1 '^pkgver=' "$ROOT/PKGBUILD" | sed -E 's/^pkgver=([0-9.]+).*/\1/')"
+	[[ "$pv" == "$VERSION" ]] || die "PKGBUILD pkgver (${pv}) must match pyproject.toml (${VERSION})"
+}
+
+sync_root_pkgbuild_to_pacman() {
+	mkdir -p "$ROOT/pacman"
+	cp -f "$ROOT/PKGBUILD" "$ROOT/pacman/PKGBUILD"
+	cp -f "$ROOT/mhi2-video-finder.install" "$ROOT/pacman/mhi2-video-finder.install"
 }
 
 build_arch_package() {
-	# Produces mhi2-video-finder-*.pkg.tar.zst from the git checkout (pacman/PKGBUILD), not aur/.
-	verify_pacman_pkgver_matches_pyproject
+	# Keep pacman/ build path for release scripts while root PKGBUILD stays canonical.
+	verify_root_pkgver_matches_pyproject
+	sync_root_pkgbuild_to_pacman
 	local workdir="$ROOT/pacman"
 	local makepkg_flags=( -f --noconfirm )
 	if makepkg --help 2>&1 | grep -q -- --nosign; then
