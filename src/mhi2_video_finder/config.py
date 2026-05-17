@@ -46,6 +46,7 @@ def _coerce_field(name: str, raw: str) -> Any:
         "embed_album_art",
         "vaapi_cbr",
         "remote_auto_download",
+        "remote_auto_download_daemon_imports",
         "groq_enabled",
         "library_skip_bulk_infer_if_tagged",
         "library_bulk_infer_mp4_compat_mode",
@@ -137,6 +138,7 @@ class Settings:
         default_factory=lambda: _expand("~/Videos/mhi2-video-finder-remote")
     )
     remote_auto_download: bool = False
+    remote_auto_download_daemon_imports: bool = False
     # Local Library tab: last browsed folder (optional).
     library_last_folder: Path | None = None
     # Guess selected: skip files that already have non-empty artist + title tags (ffprobe).
@@ -195,6 +197,7 @@ def load_settings(path: Path | None = None) -> Settings:
             "embed_album_art",
             "vaapi_cbr",
             "remote_auto_download",
+            "remote_auto_download_daemon_imports",
             "groq_enabled",
             "library_skip_bulk_infer_if_tagged",
             "library_bulk_infer_mp4_compat_mode",

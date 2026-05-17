@@ -36,6 +36,10 @@ class UiJob:
     convert_percent: float = 0.0
     convert_indeterminate: bool = False
     convert_error: str = ""
+    # Remote save-to-PC transfer state (transient, not persisted).
+    remote_fetch_in_progress: bool = False
+    remote_fetch_bytes_done: int = 0
+    remote_fetch_bytes_total: int = 0
     # Convert tab metadata editor state (not tied to download/convert pipeline).
     meta_artist: str = ""
     meta_title: str = ""

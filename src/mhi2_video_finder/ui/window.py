@@ -106,6 +106,7 @@ def _display_title_for_remote_row(raw_title: str) -> str:
 class _RemoteFetchBridge(QObject):
     ok = pyqtSignal(str)
     fail = pyqtSignal(str, str)
+    progress = pyqtSignal(str, int, int)
 
 
 class MainWindow(QMainWindow):
@@ -138,6 +139,7 @@ class MainWindow(QMainWindow):
         self._fetch_bridge = _RemoteFetchBridge(self)
         self._fetch_bridge.ok.connect(self._on_remote_fetch_ok)
         self._fetch_bridge.fail.connect(self._on_remote_fetch_fail)
+        self._fetch_bridge.progress.connect(self._on_remote_fetch_progress)
 
         if self._use_remote:
             self._remote = RemoteJobController(lambda: self._settings)
@@ -466,6 +468,26 @@ class MainWindow(QMainWindow):
             return True
         return False
 
+    def _remote_import_autosave_enabled(self) -> bool:
+        return bool(self._settings.remote_auto_download_daemon_imports)
+
+    def _should_autosave_remote_job(self, job: UiJob) -> bool:
+        if job.backend != "remote":
+            return False
+        if job.convert_status != "done" or job.remote_saved_locally:
+            return False
+        if not job.remote_job_id:
+            return False
+        if job.remote_fetch_in_progress:
+            return False
+        return (
+            (self._settings.remote_auto_download and job.remote_job_origin == "desktop")
+            or (
+                self._remote_import_autosave_enabled()
+                and job.remote_job_origin == "remote_sync"
+            )
+        )
+
     def _on_remote_daemon_jobs_imported(self, rows: object) -> None:
         """Materialize daemon-side jobs into local rows (no POST /v1/jobs)."""
         if not isinstance(rows, list) or not self._use_remote or self._remote is None:
@@ -474,6 +496,7 @@ class MainWindow(QMainWindow):
         added = 0
         to_persist: list[tuple[UiJob, int]] = []
         to_sync: list[tuple[str, str]] = []
+        to_autosave: list[UiJob] = []
         # Server returns newest-first; append oldest first so recent imports land at the bottom.
         for row in reversed(rows):
             if not isinstance(row, dict):
@@ -527,6 +550,8 @@ class MainWindow(QMainWindow):
             self._remote.register_existing(jid, rid)
             if self._needs_remote_status_sync(row):
                 to_sync.append((jid, rid))
+            if self._should_autosave_remote_job(job):
+                to_autosave.append(job)
             added += 1
 
         if added:
@@ -536,6 +561,8 @@ class MainWindow(QMainWindow):
             self._refresh_downloads_table()
             self._refresh_convert_table()
             self._status.setText(f"Imported {added} job(s) from remote daemon.")
+            for job in to_autosave:
+                self._start_remote_fetch(job)
 
     @staticmethod
     def _needs_remote_status_sync(row: dict[str, object]) -> bool:
@@ -646,6 +673,7 @@ class MainWindow(QMainWindow):
                 self._store.upsert(self._jobs[jid], seq)
 
     def _load_persisted_jobs(self) -> None:
+        to_autosave_remote: list[UiJob] = []
         for job in self._store.load_all():
             outp = job.out_path
             if not job.meta_filename_stem.strip():
@@ -705,6 +733,8 @@ class MainWindow(QMainWindow):
                 ):
                     self._remote.register_existing(jid, job.remote_job_id)
                     self._remote.sync_job_from_server(jid, job.remote_job_id)
+                elif self._should_autosave_remote_job(job):
+                    to_autosave_remote.append(job)
                 continue
 
             if job.download_status == "downloading":
@@ -739,6 +769,8 @@ class MainWindow(QMainWindow):
                         job.ytdlp_info,
                         no_embed=job.no_embed,
                     )
+        for job in to_autosave_remote:
+            self._start_remote_fetch(job)
 
     @staticmethod
     def _canonical_video_encoder(enc: str) -> str:
@@ -760,6 +792,9 @@ class MainWindow(QMainWindow):
         self.ui_remote_token.setText((self._settings.remote_bearer_token or "").strip())
         self.ui_remote_dl_dir.setText(str(self._settings.remote_download_dir))
         self.ui_remote_auto_download.setChecked(self._settings.remote_auto_download)
+        self.ui_remote_auto_download_daemon_imports.setChecked(
+            self._settings.remote_auto_download_daemon_imports
+        )
 
         self.limit_spin.setValue(self._settings.search_limit if self._settings.search_limit else 15)
         self.ui_ffmpeg_threads.setValue(max(0, min(32, self._settings.ffmpeg_threads)))
@@ -818,6 +853,9 @@ class MainWindow(QMainWindow):
         if rd:
             self._settings.remote_download_dir = Path(rd).expanduser().resolve()
         self._settings.remote_auto_download = self.ui_remote_auto_download.isChecked()
+        self._settings.remote_auto_download_daemon_imports = (
+            self.ui_remote_auto_download_daemon_imports.isChecked()
+        )
 
         self._settings.ffmpeg_threads = self.ui_ffmpeg_threads.value()
         self._settings.ffmpeg_nice = self.ui_ffmpeg_nice.value()
@@ -1083,6 +1121,10 @@ class MainWindow(QMainWindow):
         pg.addLayout(rdir_row, 3, 1)
         self.ui_remote_auto_download = QCheckBox("Auto-download finished remote jobs to the folder above")
         pg.addWidget(self.ui_remote_auto_download, 4, 0, 1, 2)
+        self.ui_remote_auto_download_daemon_imports = QCheckBox(
+            "Auto-save imported daemon jobs to PC when they are already done"
+        )
+        pg.addWidget(self.ui_remote_auto_download_daemon_imports, 5, 0, 1, 2)
         lay.addWidget(proc_box)
 
         out_box = QGroupBox("Output encoding (car USB / MHI2)")
@@ -3245,6 +3287,12 @@ class MainWindow(QMainWindow):
 
     def _convert_status_progress(self, job: UiJob) -> tuple[str, str]:
         if job.backend == "remote" and job.convert_status == "done":
+            if job.remote_fetch_in_progress:
+                if job.remote_fetch_bytes_total > 0:
+                    pct = (job.remote_fetch_bytes_done / job.remote_fetch_bytes_total) * 100.0
+                    pct = max(0.0, min(100.0, pct))
+                    return "Saving to PC...", f"{pct:.1f}%"
+                return "Saving to PC...", "..."
             if not job.remote_saved_locally:
                 return "Done on server — save to PC", "100.0%"
             return "Saved to PC", "100.0%"
@@ -3363,6 +3411,7 @@ class MainWindow(QMainWindow):
         save_label = "ReSave to PC" if overwrite else "Save to PC"
         save_btn = QPushButton(save_label)
         save_btn.setVisible(need_save)
+        save_btn.setEnabled(need_save and not job.remote_fetch_in_progress)
         if need_save and job.out_path.is_file():
             save_btn.setToolTip("A file already exists at this path; saving will overwrite it.")
         save_btn.clicked.connect(lambda *, jid=job.job_id: self._save_remote_to_pc(jid))
@@ -3557,7 +3606,7 @@ class MainWindow(QMainWindow):
             self._persist_job(job)
             self._refresh_downloads_table()
             self._refresh_convert_table()
-            if self._settings.remote_auto_download and job.remote_job_origin == "desktop":
+            if self._should_autosave_remote_job(job):
                 self._start_remote_fetch(job)
             else:
                 self._status.setText(f"Remote job done — save to PC: {job.candidate.title}")
@@ -3627,6 +3676,9 @@ class MainWindow(QMainWindow):
             self._remote.reset_local_tracking(local_id)
         job.remote_job_id = None
         job.remote_saved_locally = False
+        job.remote_fetch_in_progress = False
+        job.remote_fetch_bytes_done = 0
+        job.remote_fetch_bytes_total = 0
         job.download_status = "failed"
         job.download_percent = -1.0
         job.download_speed = ""
@@ -3652,6 +3704,8 @@ class MainWindow(QMainWindow):
             self._start_remote_fetch(job)
 
     def _start_remote_fetch(self, job: UiJob) -> None:
+        if job.remote_fetch_in_progress:
+            return
         if not job.remote_job_id:
             QMessageBox.warning(self, "Save", "Missing remote job id.")
             return
@@ -3666,34 +3720,67 @@ class MainWindow(QMainWindow):
         if tok:
             headers["Authorization"] = f"Bearer {tok}"
         out = job.out_path
+        job.remote_fetch_in_progress = True
+        job.remote_fetch_bytes_done = 0
+        job.remote_fetch_bytes_total = 0
+        self._update_convert_row_cells(job)
+        self._status.setText(f"Saving to PC... {job.candidate.title}")
 
         def work() -> None:
             try:
                 with httpx.Client(timeout=600.0) as c:
                     with c.stream("GET", url, headers=headers) as r:
                         r.raise_for_status()
+                        content_len = int(r.headers.get("content-length") or "0")
+                        if content_len < 0:
+                            content_len = 0
+                        bytes_done = 0
+                        self._fetch_bridge.progress.emit(job.job_id, bytes_done, content_len)
                         out.parent.mkdir(parents=True, exist_ok=True)
                         with open(out, "wb") as f:
                             for chunk in r.iter_bytes(chunk_size=1024 * 512):
+                                if not chunk:
+                                    continue
                                 f.write(chunk)
+                                bytes_done += len(chunk)
+                                self._fetch_bridge.progress.emit(job.job_id, bytes_done, content_len)
                 self._fetch_bridge.ok.emit(job.job_id)
             except OSError as e:
                 self._fetch_bridge.fail.emit(job.job_id, str(e))
-            except httpx.HTTPError as e:
+            except (httpx.HTTPError, ValueError) as e:
                 self._fetch_bridge.fail.emit(job.job_id, str(e))
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _on_remote_fetch_progress(self, job_id: str, bytes_done: int, bytes_total: int) -> None:
+        job = self._jobs.get(job_id)
+        if not job:
+            return
+        job.remote_fetch_in_progress = True
+        job.remote_fetch_bytes_done = max(0, int(bytes_done))
+        job.remote_fetch_bytes_total = max(0, int(bytes_total))
+        self._update_convert_row_cells(job)
 
     def _on_remote_fetch_ok(self, job_id: str) -> None:
         job = self._jobs.get(job_id)
         if not job:
             return
+        job.remote_fetch_in_progress = False
+        job.remote_fetch_bytes_done = 0
+        job.remote_fetch_bytes_total = 0
         job.remote_saved_locally = True
         self._persist_job(job)
         self._refresh_convert_table()
         self._status.setText(f"Saved: {job.out_path}")
 
     def _on_remote_fetch_fail(self, job_id: str, err: str) -> None:
+        job = self._jobs.get(job_id)
+        if job:
+            job.remote_fetch_in_progress = False
+            job.remote_fetch_bytes_done = 0
+            job.remote_fetch_bytes_total = 0
+            self._update_convert_row_cells(job)
+        self._status.setText("Saving to PC failed.")
         low = err.lower()
         if "404" in low and "/v1/jobs/" in low and "/download" in low:
             self._mark_remote_missing_and_requeue(
