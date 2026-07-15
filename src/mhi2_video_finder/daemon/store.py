@@ -381,7 +381,11 @@ class DaemonJobStore:
                     "H10",
                     "daemon/store.py:358",
                     "sqlite update_meta failed",
-                    {"job_id": str(job_id), "error": str(e), "in_transaction": bool(self._conn.in_transaction)},
+                    {
+                        "job_id": str(job_id),
+                        "error": str(e),
+                        "in_transaction": bool(self._conn.in_transaction),
+                    },
                 )
                 raise
         elapsed_ms = int((time.monotonic() - started) * 1000)

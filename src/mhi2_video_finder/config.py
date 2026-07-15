@@ -135,9 +135,7 @@ class Settings:
     processing_backend: str = "local"
     remote_base_url: str = ""
     remote_bearer_token: str = ""
-    remote_download_dir: Path = field(
-        default_factory=lambda: _expand("~/Videos/mhi2-video-finder-remote")
-    )
+    remote_download_dir: Path = field(default_factory=lambda: _expand("~/Videos/mhi2-video-finder-remote"))
     remote_auto_download: bool = False
     remote_auto_download_daemon_imports: bool = False
     # Daemon: delete a finished job's output file (and its record) this many days after

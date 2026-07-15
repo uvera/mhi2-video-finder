@@ -76,9 +76,7 @@ class JobEngine:
             max_workers=dl_workers, thread_name_prefix="vf-daemon-dl"
         )
         # Keep conversion isolated from downloads so new jobs can continue downloading.
-        self._convert_executor = ThreadPoolExecutor(
-            max_workers=cv_workers, thread_name_prefix="vf-daemon-cv"
-        )
+        self._convert_executor = ThreadPoolExecutor(max_workers=cv_workers, thread_name_prefix="vf-daemon-cv")
         # region agent log
         _debug_log(
             "H3",
@@ -284,7 +282,9 @@ class JobEngine:
             self._finish_cancelled(job_id)
             return
 
-        raw_ok = bool(row.raw_path and Path(row.raw_path).is_file() and Path(row.raw_path).stat().st_size > 4096)
+        raw_ok = bool(
+            row.raw_path and Path(row.raw_path).is_file() and Path(row.raw_path).stat().st_size > 4096
+        )
         # Resume after restart: skip download if raw cache still present
         if raw_ok:
             self._convert_executor.submit(self._run_convert_stage, job_id)

@@ -30,7 +30,9 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
-app = typer.Typer(no_args_is_help=True, help="YouTube music-video search, download, and MHI2-oriented transcode.")
+app = typer.Typer(
+    no_args_is_help=True, help="YouTube music-video search, download, and MHI2-oriented transcode."
+)
 settings_opt = typer.Option(None, "--config", help="Path to config.toml (default: XDG config path)")
 
 
@@ -116,7 +118,9 @@ def cmd_search(
     title: str | None = typer.Option(None, "--title", "-t"),
     template: str = typer.Option("music_video", "--template", help="music_video, vevo, official, plain"),
     match_filter: str | None = typer.Option(None, "--match-filter", help="yt-dlp match filter expression"),
-    use_youtube_api: bool = typer.Option(False, "--use-youtube-api", help="Use YouTube Data API (Music category)"),
+    use_youtube_api: bool = typer.Option(
+        False, "--use-youtube-api", help="Use YouTube Data API (Music category)"
+    ),
     channel_id: str | None = typer.Option(None, "--channel-id", help="With API: restrict to channel ID"),
 ) -> None:
     """Search YouTube for videos (heuristic music-video query or Data API)."""
@@ -127,7 +131,9 @@ def cmd_search(
     if use_youtube_api:
         key = s.youtube_api_key
         if not key:
-            typer.echo("YOUTUBE_API_KEY or youtube_api_key in config is required for --use-youtube-api", err=True)
+            typer.echo(
+                "YOUTUBE_API_KEY or youtube_api_key in config is required for --use-youtube-api", err=True
+            )
             raise typer.Exit(1)
 
     _, rows = _gather_rows_cli(

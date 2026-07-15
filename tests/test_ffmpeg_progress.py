@@ -62,6 +62,7 @@ def test_wrap_ffmpeg_cpulimit_wraps_when_binary_exists() -> None:
 def test_prepare_ffmpeg_subprocess_argv_cpu_limit() -> None:
     cmd = ["ffmpeg", "-y", "-i", "a", "b"]
     with patch("mhi2_video_finder.ffmpeg_progress.shutil.which") as w:
+
         def _which(name: str) -> str | None:
             if name == "cpulimit":
                 return "/x/cpulimit"

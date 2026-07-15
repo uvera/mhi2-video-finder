@@ -606,6 +606,7 @@ class RemoteJobController(QObject):
     def _ws_loop(self) -> None:
         while not self._stop.is_set():
             try:
+
                 def on_open(ws: Any) -> None:
                     # Read current subscriptions at open-time (not loop-time): jobs can be
                     # re-registered while the socket is still connecting during client restart.

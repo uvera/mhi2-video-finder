@@ -179,9 +179,7 @@ def test_run_convert_stage_rejects_path_traversal_video_id_from_recovered_row(
     from mhi2_video_finder.daemon.models import JobPhase
 
     transcode_calls: list[tuple[object, ...]] = []
-    monkeypatch.setattr(
-        engine_mod, "transcode", lambda *args, **kwargs: transcode_calls.append(args)
-    )
+    monkeypatch.setattr(engine_mod, "transcode", lambda *args, **kwargs: transcode_calls.append(args))
 
     engine, store = _new_engine(tmp_path)
     raw = tmp_path / "raw" / "ok.mkv"
@@ -234,8 +232,7 @@ def test_finish_failed_redacts_quoted_paths_containing_spaces(tmp_path: Path) ->
     engine._finish_failed(
         "j-fail-space",
         JobPhase.DOWNLOAD,
-        "[Errno 2] No such file or directory: "
-        "'/var/lib/mhi2-video-finder/output/My Song Title.mp4'",
+        "[Errno 2] No such file or directory: '/var/lib/mhi2-video-finder/output/My Song Title.mp4'",
     )
 
     row = store.get("j-fail-space")
@@ -257,9 +254,7 @@ def test_run_convert_stage_rejects_path_traversal_subdir_from_recovered_row(
     from mhi2_video_finder.daemon.models import JobPhase
 
     transcode_calls: list[tuple[object, ...]] = []
-    monkeypatch.setattr(
-        engine_mod, "transcode", lambda *args, **kwargs: transcode_calls.append(args)
-    )
+    monkeypatch.setattr(engine_mod, "transcode", lambda *args, **kwargs: transcode_calls.append(args))
 
     engine, store = _new_engine(tmp_path)
     raw = tmp_path / "raw" / "ok.mkv"
