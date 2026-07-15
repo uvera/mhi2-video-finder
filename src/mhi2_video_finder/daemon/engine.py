@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 import threading
 import time
 import uuid
@@ -17,7 +19,7 @@ from mhi2_video_finder.debug_runtime_log import emit_debug_log as _debug_log
 from mhi2_video_finder.download import download_to_cache
 from mhi2_video_finder.exceptions import OperationCancelled
 from mhi2_video_finder.transcode import transcode
-from mhi2_video_finder.workflow import ensure_output_dir, unique_out_path
+from mhi2_video_finder.workflow import ensure_output_dir, safe_join, unique_out_path
 
 from mhi2_video_finder.daemon.hub import WsHub
 from mhi2_video_finder.daemon.models import DaemonJobRow, JobPhase, JobStatus
@@ -27,6 +29,29 @@ from mhi2_video_finder.ytdlp_progress_map import ytdlp_progress_percent_and_labe
 
 
 _DOWNLOAD_STUCK_SECONDS = 10.0
+
+_log = logging.getLogger(__name__)
+
+# YouTube video IDs are always exactly 11 URL-safe characters; used to validate
+# CreateJobBody.video_id, which otherwise feeds unsanitized into unique_out_path's
+# collision-suffix filename ("{stem}_{video_id}.mp4") with no other path guard.
+_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+# Matches absolute filesystem paths so server-side details (cache/output/state
+# dirs, filenames) never leak into client-facing job error text. Quoted paths
+# (Python's OSError.__str__ always quotes them, e.g. "'/a/b c.mp4'") are matched
+# through the closing quote rather than stopping at the first space, since
+# safe_stem() allows spaces in output filenames; unquoted paths fall back to
+# stopping at whitespace.
+_ABS_PATH_RE = re.compile(
+    r"'/[^']*'"
+    r'|"/[^"]*"'
+    r"|(?<![\w.])/(?:[^\s'\"]+/)*[^\s'\":]*"
+)
+
+
+def _redact_paths(text: str) -> str:
+    return _ABS_PATH_RE.sub("<path>", text)
 
 
 class _DownloadStalled(RuntimeError):
@@ -112,6 +137,24 @@ class JobEngine:
         self._abort_for(job_id).set()
         return True
 
+    def _validate_safe_subdir_and_stem(self, subdir: str, output_stem: str) -> None:
+        """Reject subdir/output_stem values that would write outside the output dir."""
+        base_out = self._settings.merged_output_dir()
+        try:
+            if subdir:
+                safe_join(base_out, subdir)
+            if output_stem:
+                safe_join(base_out, f"{output_stem}.mp4")
+        except ValueError as e:
+            raise ValueError(f"invalid subdir or output_stem: {e}") from e
+
+    @staticmethod
+    def _validate_safe_video_id(video_id: str) -> None:
+        """Reject a video_id that isn't a plain YouTube ID (it lands unsanitized in
+        unique_out_path's collision-suffix filename)."""
+        if video_id and not _VIDEO_ID_RE.match(video_id):
+            raise ValueError("invalid video_id")
+
     def _safe_unlink_job_path(self, path_str: str | None) -> None:
         if not path_str:
             return
@@ -155,13 +198,18 @@ class JobEngine:
         no_embed: bool,
     ) -> DaemonJobRow:
         url = validate_youtube_url(url)
+        subdir = subdir.strip()
+        output_stem = output_stem.strip()
+        video_id = video_id.strip()
+        self._validate_safe_subdir_and_stem(subdir, output_stem)
+        self._validate_safe_video_id(video_id)
         job_id = str(uuid.uuid4())
         row = DaemonJobRow(
             job_id=job_id,
             url=url,
-            subdir=subdir.strip(),
-            output_stem=output_stem.strip(),
-            video_id=video_id.strip(),
+            subdir=subdir,
+            output_stem=output_stem,
+            video_id=video_id,
             title=title.strip(),
             channel=channel.strip(),
             no_embed=no_embed,
@@ -321,6 +369,7 @@ class JobEngine:
                 self._finish_cancelled(job_id)
                 return
             except Exception as e:
+                _log.exception("download stage failed for job %s", job_id)
                 if retried_after_stall:
                     self._finish_cancelled(job_id)
                 else:
@@ -412,10 +461,24 @@ class JobEngine:
             return
 
         base_out = self._settings.merged_output_dir()
+        try:
+            self._validate_safe_subdir_and_stem(row.subdir.strip(), row.output_stem or "")
+        except ValueError as e:
+            self._finish_failed(job_id, JobPhase.CONVERT, str(e))
+            return
         out_folder = ensure_output_dir(base_out / row.subdir) if row.subdir.strip() else base_out
         stem = row.output_stem or "video"
         vid_for_name = row.video_id or (yinfo or {}).get("id") or "video"
         outp = unique_out_path(out_folder, stem, str(vid_for_name))
+        try:
+            outp.expanduser().resolve().relative_to(out_folder.resolve())
+        except ValueError:
+            # video_id (unlike subdir/output_stem above) isn't re-validated here by
+            # format, since it may legitimately come from yt-dlp's info dict rather
+            # than the client; this catches it regardless of source by checking the
+            # actual path that would be handed to transcode().
+            self._finish_failed(job_id, JobPhase.CONVERT, "invalid output path")
+            return
 
         self._store.update(
             job_id,
@@ -463,6 +526,7 @@ class JobEngine:
             self._finish_cancelled(job_id)
             return
         except Exception as e:
+            _log.exception("convert stage failed for job %s", job_id)
             self._finish_failed(job_id, JobPhase.CONVERT, str(e))
             return
 
@@ -512,11 +576,12 @@ class JobEngine:
 
     def _finish_failed(self, job_id: str, phase: JobPhase, err: str) -> None:
         now = time.time()
+        err = _redact_paths(err)[:4000]
         self._store.update(
             job_id,
             status=JobStatus.FAILED,
             phase=phase,
-            error=err[:4000],
+            error=err,
             error_phase=phase,
             finished_at=now,
         )

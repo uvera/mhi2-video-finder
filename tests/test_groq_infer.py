@@ -29,7 +29,9 @@ def test_infer_author_song_parses_response(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr("mhi2_video_finder.groq_infer.httpx.Client", lambda **kw: fake_client)
 
     s = Settings(groq_api_key="x", groq_model="m", groq_base_url="https://api.groq.com/openai/v1")
-    author, song = infer_author_song(s, filename="x.mp4", probe_summary="dur: 1")
+    author, song = infer_author_song(
+        s, filename="Daft Punk - Around the World.mp4", probe_summary="dur: 1"
+    )
     assert author == "Daft Punk"
     assert song == "Around the World"
 

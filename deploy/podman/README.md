@@ -1,5 +1,44 @@
 # Podman deployment (daemon)
 
+## Upgrading an existing deployment: container now runs as non-root (uid 1000)
+
+The daemon container used to run as root; it now runs as a dedicated non-root user
+(`appuser`, uid 1000) inside the container. This closes a real security gap, but it
+means **existing named volumes (`mhi2-vf-state`, `mhi2-vf-raw`, `mhi2-vf-output`)
+still contain root-owned files from before the upgrade**, and the new non-root
+process cannot write to them — expect `jobs.sqlite` to fail to open, or downloads/
+conversions to fail with permission errors, immediately after `./rebuild-daemon.sh`.
+
+Fix the ownership once, after pulling this change and before (or right after)
+recreating the container:
+
+```bash
+cd deploy/podman
+# Stop the old container first so nothing is writing while ownership changes.
+sudo podman-compose down   # or: podman compose down
+
+# Rootful Podman / Docker:
+for v in mhi2-vf-state mhi2-vf-raw mhi2-vf-output; do
+  mp=$(sudo podman volume inspect "$v" --format '{{.Mountpoint}}') && sudo chown -R 1000:1000 "$mp"
+done
+
+# Rootless Podman (uid mapping differs; use podman unshare instead of chown):
+for v in mhi2-vf-state mhi2-vf-raw mhi2-vf-output; do
+  podman unshare chown -R 1000:1000 "$(podman volume inspect "$v" --format '{{.Mountpoint}}')"
+done
+
+./rebuild-daemon.sh
+```
+
+If you're using bind mounts instead of named volumes (the manual `podman run`
+example below), the same `chown -R 1000:1000 <host-dir>` applies to your host
+directories directly — see that section for details.
+
+The `./debug` bind mount (NDJSON runtime diagnostics) isn't included above: if it's
+still root-owned the daemon just falls back to writing inside the container at
+`/tmp/mhi2-video-finder/debug-runtime.log` instead of failing, so it's optional —
+`chown -R 1000:1000 ./debug` if you want diagnostics to land on the host again.
+
 ## Podman Compose (recommended)
 
 ### If `curl http://127.0.0.1:8765/healthz` shows only `{"status":"ok"}`
@@ -104,7 +143,9 @@ Create host directories for state and media:
 sudo mkdir -p /var/lib/mhi2-video-finder/state \
   /var/lib/mhi2-video-finder/raw \
   /var/lib/mhi2-video-finder/output
-sudo chown -R "$UID:$GID" /var/lib/mhi2-video-finder
+# The daemon runs as a non-root user (uid 1000) inside the container; bind-mounted
+# host directories must be writable by that uid.
+sudo chown -R 1000:1000 /var/lib/mhi2-video-finder
 ```
 
 Run (example):
@@ -117,12 +158,12 @@ podman run -d --name mhi2-vf \
   -e MHI2_VIDEO_FINDER_CONFIG=/config/config.toml \
   -v /path/to/config.toml:/config/config.toml:ro \
   -v /var/lib/mhi2-video-finder/state:/var/lib/mhi2-video-finder/state:Z \
-  -v /var/lib/mhi2-video-finder/raw:/root/.cache/mhi2-video-finder/raw:Z \
-  -v /var/lib/mhi2-video-finder/output:/root/Videos/mhi2-video-finder:Z \
+  -v /var/lib/mhi2-video-finder/raw:/home/appuser/.cache/mhi2-video-finder/raw:Z \
+  -v /var/lib/mhi2-video-finder/output:/home/appuser/Videos/mhi2-video-finder:Z \
   mhi2-video-finder-daemon
 ```
 
-- Set `raw_cache_dir` and `output_dir` in `config.toml` to match the two media volume mount targets (defaults inside the container are under `/root/...` as above).
+- Set `raw_cache_dir` and `output_dir` in `config.toml` to match the two media volume mount targets (defaults inside the container are under `/home/appuser/...` as above).
 - API contract: [docs/daemon-api.yaml](../../docs/daemon-api.yaml) and [docs/daemon-websocket.md](../../docs/daemon-websocket.md).
 
 ### systemd (quadlet)

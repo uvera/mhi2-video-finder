@@ -67,6 +67,26 @@ def ensure_output_dir(folder: Path) -> Path:
     return resolved
 
 
+def safe_join(base: Path, *parts: str) -> Path:
+    """Join ``parts`` under ``base``; raise ValueError if the result would escape it.
+
+    Guards against path traversal (``..`` segments) and absolute-path overrides
+    (``Path("/a") / "/etc/passwd"`` discards the base entirely) in user-supplied
+    subdir/filename-stem values, without requiring the path to exist on disk.
+    """
+    resolved_base = base.expanduser().resolve()
+    candidate = resolved_base
+    for part in parts:
+        if part:
+            candidate = candidate / part
+    resolved_candidate = candidate.expanduser().resolve()
+    try:
+        resolved_candidate.relative_to(resolved_base)
+    except ValueError:
+        raise ValueError("path escapes base directory") from None
+    return resolved_candidate
+
+
 def ensure_and_print_output_dir(folder: Path, *, err_stream: bool = True) -> Path:
     """Create folder and print absolute path (stderr by default), matching CLI behavior."""
     resolved = ensure_output_dir(folder)

@@ -7,6 +7,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+RUN useradd --create-home --uid 1000 --shell /usr/sbin/nologin appuser
+
 WORKDIR /app
 COPY pyproject.toml README.md /app/
 COPY src /app/src
@@ -17,6 +19,16 @@ ENV DAEMON_HOST=0.0.0.0
 ENV DAEMON_PORT=8765
 # Persist job DB + media on volumes (see deploy/podman/README.md)
 ENV DAEMON_STATE_DIR=/var/lib/mhi2-video-finder/state
+
+# Pre-create volume mount points owned by the non-root user: Podman/Docker
+# initialize a fresh named volume from the image directory it's mounted over
+# (ownership included), so this is what makes the daemon able to write to
+# state/cache/output volumes without running as root.
+RUN mkdir -p /var/lib/mhi2-video-finder/state /var/lib/mhi2-video-finder/debug \
+        /home/appuser/.cache/mhi2-video-finder/raw /home/appuser/Videos/mhi2-video-finder \
+    && chown -R appuser:appuser /var/lib/mhi2-video-finder /home/appuser
+
+USER appuser
 
 EXPOSE 8765
 

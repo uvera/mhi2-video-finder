@@ -43,8 +43,8 @@ services:
       - ./config.toml:/config/config.toml:ro,Z
       - mhi2-vf-state:/var/lib/mhi2-video-finder/state:Z
       - ./debug:/var/lib/mhi2-video-finder/debug:Z
-      - mhi2-vf-raw:/root/.cache/mhi2-video-finder/raw:Z
-      - mhi2-vf-output:/root/Videos/mhi2-video-finder:Z
+      - mhi2-vf-raw:/home/appuser/.cache/mhi2-video-finder/raw:Z
+      - mhi2-vf-output:/home/appuser/Videos/mhi2-video-finder:Z
     restart: unless-stopped
 
 volumes:

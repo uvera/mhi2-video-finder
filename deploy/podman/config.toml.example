@@ -3,8 +3,8 @@
 #
 # Paths below must match the volume mounts in compose.yaml (inside the container).
 
-raw_cache_dir = "/root/.cache/mhi2-video-finder/raw"
-output_dir = "/root/Videos/mhi2-video-finder"
+raw_cache_dir = "/home/appuser/.cache/mhi2-video-finder/raw"
+output_dir = "/home/appuser/Videos/mhi2-video-finder"
 max_parallel_downloads = 1
 
 # Optional: tune encode defaults (see main README)

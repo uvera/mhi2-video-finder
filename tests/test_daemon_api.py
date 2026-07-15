@@ -17,8 +17,17 @@ def daemon_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient
     import importlib
 
     import mhi2_video_finder.daemon.app as app_mod
+    import mhi2_video_finder.daemon.engine as engine_mod
 
     importlib.reload(app_mod)
+
+    def _no_network_download(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError(
+            "test tried to hit the real network via download_to_cache; mock it or fix the guard "
+            "that should have rejected this job before it reached the download stage"
+        )
+
+    monkeypatch.setattr(engine_mod, "download_to_cache", _no_network_download)
     with TestClient(app_mod.app) as client:
         yield client
 
@@ -29,8 +38,52 @@ def test_healthz(daemon_client: TestClient) -> None:
     assert r.json()["status"] == "ok"
 
 
+def test_startup_warns_when_bearer_token_unset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("DAEMON_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("DAEMON_BEARER_TOKEN", raising=False)
+    import importlib
+
+    import mhi2_video_finder.daemon.app as app_mod
+
+    importlib.reload(app_mod)
+    with caplog.at_level("WARNING", logger="mhi2_video_finder.daemon.auth"):
+        with TestClient(app_mod.app):
+            pass
+    assert any("DAEMON_BEARER_TOKEN" in r.message for r in caplog.records)
+
+
 def test_create_job_rejects_non_youtube(daemon_client: TestClient) -> None:
     r = daemon_client.post("/v1/jobs", json={"url": "https://example.com/video"})
+    assert r.status_code == 400
+
+
+def test_create_job_rejects_path_traversal_subdir(daemon_client: TestClient) -> None:
+    r = daemon_client.post(
+        "/v1/jobs",
+        json={"url": "https://youtu.be/dQw4w9WgXcQ", "subdir": "../../etc", "output_stem": "x"},
+    )
+    assert r.status_code == 400
+
+
+def test_create_job_rejects_path_traversal_output_stem(daemon_client: TestClient) -> None:
+    r = daemon_client.post(
+        "/v1/jobs",
+        json={
+            "url": "https://youtu.be/dQw4w9WgXcQ",
+            "subdir": "",
+            "output_stem": "../../../etc/cron.d/pwn",
+        },
+    )
+    assert r.status_code == 400
+
+
+def test_create_job_rejects_absolute_output_stem(daemon_client: TestClient) -> None:
+    r = daemon_client.post(
+        "/v1/jobs",
+        json={"url": "https://youtu.be/dQw4w9WgXcQ", "subdir": "", "output_stem": "/etc/passwd"},
+    )
     assert r.status_code == 400
 
 

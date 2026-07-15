@@ -21,7 +21,7 @@ from mhi2_video_finder.debug_runtime_log import debug_startup_stderr_banner
 from mhi2_video_finder.debug_runtime_log import emit_debug_log as _debug_log
 from mhi2_video_finder.debug_runtime_log import log_daemon_visible
 
-from mhi2_video_finder.daemon.auth import require_bearer, ws_token_ok
+from mhi2_video_finder.daemon.auth import require_bearer, warn_if_auth_disabled, ws_token_ok
 from mhi2_video_finder.daemon.engine import JobEngine
 from mhi2_video_finder.daemon.hub import WsHub
 from mhi2_video_finder.daemon.models import JobStatus
@@ -110,6 +110,7 @@ async def lifespan(app: FastAPI):
     started_at = time.time()
     loop = asyncio.get_running_loop()
     debug_startup_stderr_banner("daemon")
+    warn_if_auth_disabled()
     cfg_path = _config_path()
     db_path = _state_path()
     app_settings = load_settings(cfg_path)
@@ -222,15 +223,18 @@ def create_job(body: CreateJobBody) -> dict[str, Any]:
     if not stem or stem == "video":
         # caller should pass title-based stem; keep minimal default
         stem = safe_stem(body.title, vid or "video")
-    row = engine.create_job(
-        url=url,
-        subdir=body.subdir,
-        output_stem=stem,
-        video_id=vid,
-        title=body.title,
-        channel=body.channel,
-        no_embed=body.no_embed,
-    )
+    try:
+        row = engine.create_job(
+            url=url,
+            subdir=body.subdir,
+            output_stem=stem,
+            video_id=vid,
+            title=body.title,
+            channel=body.channel,
+            no_embed=body.no_embed,
+        )
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
     # region agent log
     _debug_log(
         "H2",
