@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import os
+import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
-
-import tomllib
 
 
 def _expand(p: str | Path) -> Path:

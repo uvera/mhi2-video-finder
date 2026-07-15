@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import threading
 from functools import partial
 from pathlib import Path
-import threading
-from typing import Any, Literal
+from typing import Literal
 
 import httpx
 from PyQt6.QtCore import QEvent, QObject, QSize, Qt, QTimer, pyqtSignal
@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -31,11 +32,10 @@ from PyQt6.QtWidgets import (
     QSpinBox,
     QStyle,
     QSystemTrayIcon,
-    QTabWidget,
-    QTextEdit,
-    QHeaderView,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -43,9 +43,9 @@ from PyQt6.QtWidgets import (
 from mhi2_video_finder import __version__
 from mhi2_video_finder.build_info import build_date_display
 from mhi2_video_finder.config import Settings, default_config_path, load_settings, save_settings
+from mhi2_video_finder.local_library import LibraryFileRow
 from mhi2_video_finder.paste_urls import parse_pasted_video_urls
 from mhi2_video_finder.search import VideoCandidate
-from mhi2_video_finder.local_library import LibraryFileRow
 from mhi2_video_finder.workflow import (
     ensure_output_dir,
     infer_subdir_name,

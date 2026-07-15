@@ -5,8 +5,8 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
-from pathlib import Path
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from mhi2_video_finder.config import Settings, build_ffmpeg_command

@@ -454,7 +454,7 @@ def cmd_interactive(
     _print_candidates(rows)
     try:
         pick_line = input(
-            f"Pick video(s) to download — one number, comma list (1,3), range (2-4), or 'all' — 0 to cancel: "
+            "Pick video(s) to download — one number, comma list (1,3), range (2-4), or 'all' — 0 to cancel: "
         ).strip()
     except EOFError:
         raise typer.Abort()

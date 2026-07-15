@@ -9,8 +9,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from mhi2_video_finder.debug_runtime_log import emit_debug_log as _debug_log
 from mhi2_video_finder.daemon.models import DaemonJobRow, JobPhase, JobStatus
+from mhi2_video_finder.debug_runtime_log import emit_debug_log as _debug_log
 
 
 class DaemonJobStore:
