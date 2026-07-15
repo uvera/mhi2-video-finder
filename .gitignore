@@ -1,5 +1,6 @@
 .venv/
 __pycache__/
+src/mhi2_video_finder/_build_stamp.py
 *.py[cod]
 *.egg-info/
 .pytest_cache/

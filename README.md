@@ -23,11 +23,15 @@ sudo pacman -S ffmpeg
 From the repository root:
 
 ```bash
-makepkg -si
+makepkg -sif
 ```
 
-`makepkg -si` builds `*.pkg.tar.zst` and then installs it. If you only want to build the
-package artifact without installing, use `makepkg -s` (or plain `makepkg`).
+`makepkg -sif` builds `*.pkg.tar.zst` from the current checkout and installs it. The `-f`
+(force) is required on every rebuild after the first: makepkg refuses to build at all if a
+`*.pkg.tar.zst` from a previous run is still sitting in the repo root (harmless local build
+output, already `.gitignore`d) — without `-f` it just errors out with "a package has already
+been built" instead of picking up your source changes. If you only want to build the package
+artifact without installing, use `makepkg -sf` (or `makepkg -f`).
 
 This installs `/usr/bin/mhi2-video-finder`, `/usr/bin/mhi2-video-finder-ui`, and the desktop entry system-wide.
 

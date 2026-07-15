@@ -44,7 +44,7 @@ class LibraryFileRow:
 
 
 def iter_video_files_recursive(root: Path) -> list[Path]:
-    """Return sorted unique video paths under ``root`` (recursive)."""
+    """Return video paths under ``root`` (recursive), newest file first (mtime)."""
     root = root.expanduser().resolve()
     if not root.is_dir():
         return []
@@ -55,5 +55,13 @@ def iter_video_files_recursive(root: Path) -> list[Path]:
         if p.name.startswith(METADATA_REMUX_TEMP_PREFIX):
             continue
         out.append(p)
-    out.sort(key=lambda x: str(x).lower())
+
+    def _sort_key(p: Path) -> tuple[float, str]:
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        return (-mtime, str(p).lower())
+
+    out.sort(key=_sort_key)
     return out

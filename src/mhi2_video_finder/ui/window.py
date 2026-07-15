@@ -41,6 +41,7 @@ from PyQt6.QtWidgets import (
 )
 
 from mhi2_video_finder import __version__
+from mhi2_video_finder.build_info import build_date_display
 from mhi2_video_finder.config import Settings, default_config_path, load_settings, save_settings
 from mhi2_video_finder.paste_urls import parse_pasted_video_urls
 from mhi2_video_finder.search import VideoCandidate
@@ -208,12 +209,24 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_library_tab(), "Library")
         tabs.addTab(self._build_settings_tab(), "Settings")
 
+        version_row = QWidget()
+        version_row_lay = QHBoxLayout(version_row)
+        version_row_lay.setContentsMargins(8, 6, 8, 6)
+        version_row_lay.addStretch(1)
+        version_label = QLabel(f"mhi2-video-finder v{__version__} · built {build_date_display()}")
+        version_label.setStyleSheet(
+            "color: palette(text); background-color: palette(button);"
+            "padding: 2px 8px; border-radius: 4px; font-weight: 600;"
+        )
+        version_row_lay.addWidget(version_label)
+
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
         # Breathing room above the physical window bottom so descenders / anti-aliasing are not cut off.
         root.setContentsMargins(0, 0, 0, 16)
         root.setSpacing(0)
+        root.addWidget(version_row, 0)
         root.addWidget(tabs, 1)
 
         # Keep status strip inside the central layout (not QStatusBar). Some Wayland compositors
@@ -3266,25 +3279,6 @@ class MainWindow(QMainWindow):
         extra = f"{job.download_speed}  {job.download_eta}".strip()
         return detail, prog_txt, extra
 
-    @staticmethod
-    def _convert_queue_sort_key(job: UiJob) -> tuple[int, int, str]:
-        """Order: Converting, Queued, failed/cancelled, then done.
-
-        Within *done*, remote rows still waiting for Save to PC come before saved/local finished.
-        """
-        title = (job.candidate.title or "").lower()
-        st = job.convert_status
-        if st == "converting":
-            return (0, 0, title)
-        if st in ("queued", "waiting"):
-            return (1, 0, title)
-        if st in ("failed", "cancelled"):
-            return (2, 0, title)
-        if st == "done":
-            pending_save = job.backend == "remote" and not job.remote_saved_locally
-            return (3, 0 if pending_save else 1, title)
-        return (4, 0, title)
-
     def _convert_status_progress(self, job: UiJob) -> tuple[str, str]:
         if job.backend == "remote" and job.convert_status == "done":
             if job.remote_fetch_in_progress:
@@ -3352,8 +3346,12 @@ class MainWindow(QMainWindow):
 
     def _refresh_convert_table(self) -> None:
         selected_job_id = self._convert_current_job_id()
-        rows = [self._jobs[j] for j in self._job_order if self._jobs[j].download_status == "done"]
-        rows.sort(key=self._convert_queue_sort_key)
+        # _job_order is append-only (oldest first); reverse it so the newest job is on top.
+        rows = [
+            self._jobs[j]
+            for j in reversed(self._job_order)
+            if self._jobs[j].download_status == "done"
+        ]
         self.convert_table.blockSignals(True)
         self.convert_table.setRowCount(len(rows))
         for i, job in enumerate(rows):

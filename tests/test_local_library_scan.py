@@ -2,9 +2,27 @@
 
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
 from mhi2_video_finder.local_library import iter_video_files_recursive
+
+
+def test_iter_video_files_recursive_orders_newest_mtime_first(tmp_path: Path) -> None:
+    oldest = tmp_path / "oldest.mp4"
+    middle = tmp_path / "middle.mp4"
+    newest = tmp_path / "newest.mp4"
+    for p in (oldest, middle, newest):
+        p.write_bytes(b"x")
+    now = time.time()
+    os.utime(oldest, (now - 200, now - 200))
+    os.utime(middle, (now - 100, now - 100))
+    os.utime(newest, (now, now))
+
+    out = iter_video_files_recursive(tmp_path)
+
+    assert [p.name for p in out] == ["newest.mp4", "middle.mp4", "oldest.mp4"]
 
 
 def test_iter_video_files_recursive(tmp_path: Path) -> None:
