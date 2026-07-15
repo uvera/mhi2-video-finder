@@ -19,6 +19,8 @@ dev = [
     "pytest>=8.0.0",
     "httpx>=0.27.0",
     "fastapi>=0.115.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
 ]
 gui = [
     "PyQt6>=6.6.0",
@@ -47,3 +49,30 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 110
+extend-exclude = ["aur", ".makepkg"]
+
+[tool.ruff.lint]
+# Baseline for an until-now unlinted codebase: correctness (F), style (E/W),
+# import sorting (I), Python-version modernization (UP), and common-bug
+# patterns (B). Stricter rule families (type-annotation coverage, docstrings,
+# full pylint, bandit security) are a deliberate follow-up, not part of this
+# initial pass, to keep the first green baseline reviewable.
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["mhi2_video_finder"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+# The codebase has no prior type-checking history; start advisory (report
+# errors where types are already annotated/inferable) rather than requiring
+# full annotation coverage everywhere via strict/disallow_untyped_defs.
+check_untyped_defs = false
