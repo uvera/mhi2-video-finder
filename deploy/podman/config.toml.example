@@ -11,3 +11,7 @@ max_parallel_downloads = 1
 # max_width = 720
 # max_height = 576
 # video_encoder = "libx264"
+
+# Daemon: delete a finished job's file + record this many days after completion
+# if nobody fetched it; a later request just re-downloads. 0 disables the sweep.
+# job_retention_days = 3

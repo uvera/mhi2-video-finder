@@ -124,6 +124,41 @@ paths:
         "401":
           description: Unauthorized
 
+  /v1/jobs/{job_id}:
+    delete:
+      summary: Delete a job's record and any cached/output file on disk
+      description: |
+        Cancels the job if still active, then best-effort removes its raw cache and
+        output file and drops the row. Clients call this once a job's output has been
+        fetched via `/download` and saved locally, so the server doesn't keep a
+        redundant copy. The daemon also runs this automatically for `done` jobs older
+        than `job_retention_days` (default 3) — a later request for the same video
+        just re-downloads it.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: string
+                  deleted:
+                    type: boolean
+        "404":
+          description: Unknown job_id
+        "401":
+          description: Unauthorized
+
   /v1/jobs/{job_id}/download:
     get:
       summary: Download converted MP4 (only when status is done)

@@ -3772,6 +3772,17 @@ class MainWindow(QMainWindow):
         self._persist_job(job)
         self._refresh_convert_table()
         self._status.setText(f"Saved: {job.out_path}")
+        # The file is safely on this PC now; tell the daemon to drop its copy and job
+        # record so server disk isn't holding a redundant file forever.
+        rid = (job.remote_job_id or "").strip()
+        if rid and self._remote is not None:
+            remote = self._remote
+
+            def _cleanup_server_copy(remote_id: str = rid) -> None:
+                if remote.delete_server_job_sync(remote_id):
+                    remote.reset_local_tracking(job_id)
+
+            threading.Thread(target=_cleanup_server_copy, daemon=True).start()
 
     def _on_remote_fetch_fail(self, job_id: str, err: str) -> None:
         job = self._jobs.get(job_id)

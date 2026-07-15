@@ -97,6 +97,40 @@ def test_store_repairs_invalid_status_rows_on_open(tmp_path: Path) -> None:
     store.close()
 
 
+def test_list_stale_done_returns_only_old_finished_jobs(tmp_path: Path) -> None:
+    store = DaemonJobStore(tmp_path / "jobs.sqlite")
+    now = time.time()
+    store.insert(
+        DaemonJobRow(
+            job_id="old-done",
+            url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            status=JobStatus.DONE,
+            finished_at=now - 4 * 86400,
+        )
+    )
+    store.insert(
+        DaemonJobRow(
+            job_id="recent-done",
+            url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            status=JobStatus.DONE,
+            finished_at=now - 1 * 86400,
+        )
+    )
+    store.insert(
+        DaemonJobRow(
+            job_id="old-failed",
+            url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            status=JobStatus.FAILED,
+            finished_at=now - 4 * 86400,
+        )
+    )
+
+    stale = store.list_stale_done(now - 3 * 86400)
+
+    assert [r.job_id for r in stale] == ["old-done"]
+    store.close()
+
+
 def test_store_get_normalizes_non_string_job_id(tmp_path: Path) -> None:
     db = tmp_path / "jobs.sqlite"
     store = DaemonJobStore(db)

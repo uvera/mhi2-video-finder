@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import time
 from pathlib import Path
 
 import pytest
@@ -79,6 +80,65 @@ def test_download_stall_retries_once_then_continues(
     assert row.status == JobStatus.DOWNLOADING
     assert row.raw_path is not None
     assert len(engine._convert_executor.submissions) == 1  # type: ignore[attr-defined]
+
+    store.close()
+    engine.shutdown(wait=False)
+
+
+def test_sweep_expired_jobs_deletes_stale_done_output_and_row(tmp_path: Path) -> None:
+    engine, store = _new_engine(tmp_path)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stale_out = out_dir / "stale.mp4"
+    stale_out.write_bytes(b"x")
+    fresh_out = out_dir / "fresh.mp4"
+    fresh_out.write_bytes(b"x")
+
+    now = time.time()
+    store.insert(
+        DaemonJobRow(
+            job_id="stale",
+            url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            status=JobStatus.DONE,
+            output_path=str(stale_out),
+            finished_at=now - 4 * 86400,
+        )
+    )
+    store.insert(
+        DaemonJobRow(
+            job_id="fresh",
+            url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            status=JobStatus.DONE,
+            output_path=str(fresh_out),
+            finished_at=now - 1 * 86400,
+        )
+    )
+
+    deleted = engine.sweep_expired_jobs(3 * 86400)
+
+    assert deleted == 1
+    assert store.get("stale") is None
+    assert store.get("fresh") is not None
+    assert not stale_out.exists()
+    assert fresh_out.exists()
+
+    store.close()
+    engine.shutdown(wait=False)
+
+
+def test_sweep_expired_jobs_disabled_when_retention_non_positive(tmp_path: Path) -> None:
+    engine, store = _new_engine(tmp_path)
+    store.insert(
+        DaemonJobRow(
+            job_id="old",
+            url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            status=JobStatus.DONE,
+            finished_at=time.time() - 30 * 86400,
+        )
+    )
+
+    assert engine.sweep_expired_jobs(0) == 0
+    assert store.get("old") is not None
 
     store.close()
     engine.shutdown(wait=False)

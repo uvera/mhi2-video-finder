@@ -303,6 +303,19 @@ class DaemonJobStore:
             )
             return [self._row_from_sql(r) for r in cur.fetchall()]
 
+    def list_stale_done(self, cutoff: float) -> list[DaemonJobRow]:
+        """Jobs finished before ``cutoff`` (epoch seconds) and still ``done`` (retention sweep)."""
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT * FROM daemon_jobs
+                WHERE status = ? AND finished_at IS NOT NULL AND finished_at < ?
+                ORDER BY finished_at ASC
+                """,
+                (JobStatus.DONE.value, cutoff),
+            )
+            return [self._row_from_sql(r) for r in cur.fetchall()]
+
     def delete(self, job_id: str) -> None:
         job_id_s = str(job_id)
         started = time.monotonic()

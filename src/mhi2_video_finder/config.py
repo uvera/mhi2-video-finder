@@ -66,6 +66,7 @@ def _coerce_field(name: str, raw: str) -> Any:
         "max_parallel_downloads",
         "max_parallel_converts",
         "vaapi_profile",
+        "job_retention_days",
     ):
         return int(raw)
     if name == "groq_temperature":
@@ -139,6 +140,9 @@ class Settings:
     )
     remote_auto_download: bool = False
     remote_auto_download_daemon_imports: bool = False
+    # Daemon: delete a finished job's output file (and its record) this many days after
+    # completion if nobody has fetched it; a later request just re-downloads. 0 disables.
+    job_retention_days: int = 3
     # Local Library tab: last browsed folder (optional).
     library_last_folder: Path | None = None
     # Guess selected: skip files that already have non-empty artist + title tags (ffprobe).

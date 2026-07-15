@@ -189,6 +189,14 @@ class JobEngine:
         )
         return row
 
+    def sweep_expired_jobs(self, retention_seconds: float) -> int:
+        """Delete finished jobs (file + row) past retention; a later request just re-downloads."""
+        if retention_seconds <= 0:
+            return 0
+        cutoff = time.time() - retention_seconds
+        rows = self._store.list_stale_done(cutoff)
+        return sum(1 for row in rows if self.delete_job(row.job_id))
+
     def recover_non_terminal(self) -> None:
         for row in self._store.list_non_terminal():
             raw_ok = bool(

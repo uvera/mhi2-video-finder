@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -79,11 +80,30 @@ engine: JobEngine | None = None
 app_settings: Settings | None = None
 telegram_runner: TelegramBotRunner | None = None
 
+_RETENTION_SWEEP_INTERVAL_SECONDS = 3600.0
+
+
+async def _retention_sweep_loop() -> None:
+    while True:
+        try:
+            if engine is not None and app_settings is not None:
+                retention_seconds = float(app_settings.job_retention_days) * 86400.0
+                await asyncio.to_thread(engine.sweep_expired_jobs, retention_seconds)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            _debug_log(
+                "H11",
+                "daemon/app.py:_retention_sweep_loop",
+                "retention sweep failed",
+                {"error": str(e)},
+            )
+        await asyncio.sleep(_RETENTION_SWEEP_INTERVAL_SECONDS)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global store, engine, app_settings, telegram_runner
-    import asyncio
 
     loop = asyncio.get_running_loop()
     debug_startup_stderr_banner("daemon")
@@ -119,7 +139,11 @@ async def lifespan(app: FastAPI):
     engine = JobEngine(app_settings, store, hub, loop)
     engine.recover_non_terminal()
     telegram_runner = TelegramBotRunner.maybe_start(engine)
+    retention_task = asyncio.create_task(_retention_sweep_loop())
     yield
+    retention_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await retention_task
     if telegram_runner:
         telegram_runner.stop()
         telegram_runner = None
