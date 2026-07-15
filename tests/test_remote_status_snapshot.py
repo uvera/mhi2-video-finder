@@ -1,8 +1,12 @@
-"""Remote daemon row → UiJob snapshot mapping (no Qt widgets)."""
+"""Remote daemon row → UiJob snapshot mapping (no Qt widgets, but MainWindow needs PyQt6 importable)."""
 
 from __future__ import annotations
 
 from pathlib import Path
+
+import pytest
+
+pytest.importorskip("PyQt6")
 
 from mhi2_video_finder.search import VideoCandidate
 from mhi2_video_finder.ui.models import UiJob
