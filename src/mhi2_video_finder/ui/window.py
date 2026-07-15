@@ -83,6 +83,8 @@ from .workers import (
 _REMOTE_DAEMON_IMPORT_SUBDIR = "daemon-imports"
 # Poll daemon job list so Telegram/API-created jobs appear without restarting the UI.
 _REMOTE_JOBS_POLL_MS = 10_000
+# Poll daemon diagnostics (uptime, build info, job counts) for the Daemon Diagnostics tab.
+_DIAGNOSTICS_POLL_MS = 15_000
 # Shrink max window height below availableGeometry so the bottom strip stays visible (Wayland /
 # fractional scaling often clips the last ~10–20 logical px if we use the full work area).
 _WORK_AREA_BOTTOM_INSET_PX = 48
@@ -149,6 +151,8 @@ class MainWindow(QMainWindow):
             self._remote.remote_missing.connect(self._on_remote_missing)
             self._remote.recent_jobs_ready.connect(self._on_remote_daemon_jobs_imported)
             self._remote.remote_meta_updated.connect(self._on_remote_meta_updated)
+            self._remote.diagnostics_ready.connect(self._on_diagnostics_ready)
+            self._remote.diagnostics_failed.connect(self._on_diagnostics_failed)
             self._dl = self._remote.dl
             self._cv = self._remote.cv
             self._remote.start_ws()
@@ -208,6 +212,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_convert_tab(), "Convert")
         tabs.addTab(self._build_library_tab(), "Library")
         tabs.addTab(self._build_settings_tab(), "Settings")
+        tabs.addTab(self._build_daemon_diagnostics_tab(), "Daemon Diagnostics")
 
         version_row = QWidget()
         version_row_lay = QHBoxLayout(version_row)
@@ -292,10 +297,19 @@ class MainWindow(QMainWindow):
             self._remote_jobs_poll.setInterval(_REMOTE_JOBS_POLL_MS)
             self._remote_jobs_poll.timeout.connect(self._poll_remote_daemon_jobs)
             self._remote_jobs_poll.start()
+            self._remote.fetch_diagnostics_async()
+            self._diagnostics_poll = QTimer(self)
+            self._diagnostics_poll.setInterval(_DIAGNOSTICS_POLL_MS)
+            self._diagnostics_poll.timeout.connect(self._poll_diagnostics)
+            self._diagnostics_poll.start()
 
     def _poll_remote_daemon_jobs(self) -> None:
         if self._remote is not None and self._use_remote:
             self._remote.fetch_recent_jobs_async(200)
+
+    def _poll_diagnostics(self) -> None:
+        if self._remote is not None and self._use_remote:
+            self._remote.fetch_diagnostics_async()
 
     def _apply_initial_window_geometry(self) -> None:
         """Place and size the window inside the work area (respects top/bottom panels)."""
@@ -1566,6 +1580,122 @@ class MainWindow(QMainWindow):
             )
         else:
             self._status.setText(f"Queued {len(ok)} video(s) from pasted URLs.")
+
+    def _build_daemon_diagnostics_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+
+        self._diag_disabled_label = QLabel(
+            "Diagnostics require the Remote processing backend. Enable it under "
+            "Settings → Processing backend, set the server URL, then restart the app."
+        )
+        self._diag_disabled_label.setWordWrap(True)
+        self._diag_disabled_label.setVisible(self._remote is None)
+        lay.addWidget(self._diag_disabled_label)
+
+        top_row = QHBoxLayout()
+        self._diag_status_label = QLabel("Status: —")
+        self._diag_status_label.setStyleSheet("font-weight: 600;")
+        top_row.addWidget(self._diag_status_label)
+        top_row.addStretch(1)
+        self._diag_refresh_btn = QPushButton("Refresh now")
+        self._diag_refresh_btn.setEnabled(self._remote is not None)
+        self._diag_refresh_btn.clicked.connect(self._refresh_diagnostics_clicked)
+        top_row.addWidget(self._diag_refresh_btn)
+        lay.addLayout(top_row)
+
+        build_box = QGroupBox("Daemon build")
+        bg = QGridLayout(build_box)
+        self._diag_version_val = QLabel("—")
+        self._diag_commit_val = QLabel("—")
+        self._diag_build_date_val = QLabel("—")
+        self._diag_uptime_val = QLabel("—")
+        for row, (label, value) in enumerate(
+            (
+                ("Version:", self._diag_version_val),
+                ("Build commit:", self._diag_commit_val),
+                ("Build date:", self._diag_build_date_val),
+                ("Uptime:", self._diag_uptime_val),
+            )
+        ):
+            bg.addWidget(QLabel(label), row, 0)
+            bg.addWidget(value, row, 1)
+        lay.addWidget(build_box)
+
+        cfg_box = QGroupBox("Daemon configuration")
+        cg = QGridLayout(cfg_box)
+        self._diag_max_dl_val = QLabel("—")
+        self._diag_max_cv_val = QLabel("—")
+        self._diag_encoder_val = QLabel("—")
+        self._diag_retention_val = QLabel("—")
+        for row, (label, value) in enumerate(
+            (
+                ("Parallel downloads:", self._diag_max_dl_val),
+                ("Parallel converts:", self._diag_max_cv_val),
+                ("Video encoder:", self._diag_encoder_val),
+                ("Job retention (days):", self._diag_retention_val),
+            )
+        ):
+            cg.addWidget(QLabel(label), row, 0)
+            cg.addWidget(value, row, 1)
+        lay.addWidget(cfg_box)
+
+        jobs_box = QGroupBox("Job counts")
+        jg = QGridLayout(jobs_box)
+        self._diag_job_count_labels: dict[str, QLabel] = {}
+        for col, key in enumerate(
+            ("queued", "downloading", "converting", "done", "failed", "cancelled", "total")
+        ):
+            jg.addWidget(QLabel(key.capitalize() + ":"), 0, col * 2)
+            val = QLabel("—")
+            self._diag_job_count_labels[key] = val
+            jg.addWidget(val, 0, col * 2 + 1)
+        lay.addWidget(jobs_box)
+
+        lay.addStretch(1)
+        return w
+
+    @staticmethod
+    def _format_uptime(seconds: float) -> str:
+        s = max(0, int(seconds))
+        days, s = divmod(s, 86400)
+        hours, s = divmod(s, 3600)
+        minutes, s = divmod(s, 60)
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        if hours or days:
+            parts.append(f"{hours}h")
+        parts.append(f"{minutes}m")
+        return " ".join(parts)
+
+    def _refresh_diagnostics_clicked(self) -> None:
+        if self._remote is not None:
+            self._diag_status_label.setText("Status: checking…")
+            self._remote.fetch_diagnostics_async()
+
+    def _on_diagnostics_ready(self, data: dict) -> None:
+        self._diag_status_label.setText("Status: online")
+        self._diag_status_label.setStyleSheet("font-weight: 600; color: #2e7d32;")
+        self._diag_version_val.setText(str(data.get("app_version") or "—"))
+        self._diag_commit_val.setText(str(data.get("build_commit") or "—"))
+        self._diag_build_date_val.setText(str(data.get("build_date") or "—"))
+        uptime = data.get("uptime_seconds")
+        self._diag_uptime_val.setText(
+            self._format_uptime(float(uptime)) if isinstance(uptime, (int, float)) else "—"
+        )
+        self._diag_max_dl_val.setText(str(data.get("max_parallel_downloads") or "—"))
+        self._diag_max_cv_val.setText(str(data.get("max_parallel_converts") or "—"))
+        self._diag_encoder_val.setText(str(data.get("video_encoder") or "—"))
+        self._diag_retention_val.setText(str(data.get("job_retention_days") or "—"))
+        counts = data.get("job_counts")
+        if isinstance(counts, dict):
+            for key, label in self._diag_job_count_labels.items():
+                label.setText(str(counts.get(key, 0)))
+
+    def _on_diagnostics_failed(self, reason: str) -> None:
+        self._diag_status_label.setText(f"Status: offline — {reason}")
+        self._diag_status_label.setStyleSheet("font-weight: 600; color: #c62828;")
 
     def _build_downloads_tab(self) -> QWidget:
         w = QWidget()

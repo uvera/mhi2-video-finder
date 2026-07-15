@@ -106,6 +106,9 @@ class RemoteJobController(QObject):
     # title/channel/video_id from REST or WebSocket when daemon fills them (e.g. after yt-dlp).
     # Empty string for a field means "leave existing UI value unchanged".
     remote_meta_updated = pyqtSignal(str, str, str, str)
+    # Emitted on GUI thread after ``GET /v1/diagnostics`` (Daemon Diagnostics tab).
+    diagnostics_ready = pyqtSignal(dict)
+    diagnostics_failed = pyqtSignal(str)
 
     def __init__(self, get_settings: Callable[[], Settings]) -> None:
         super().__init__()
@@ -127,6 +130,7 @@ class RemoteJobController(QObject):
         self._sync_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="vf-remote-sync")
         self._sync_inflight: set[tuple[str, str]] = set()
         self._recent_jobs_fetch_lock = threading.Lock()
+        self._diagnostics_fetch_lock = threading.Lock()
 
     def register_existing(self, local_id: str, remote_id: str) -> None:
         with self._lock:
@@ -292,6 +296,51 @@ class RemoteJobController(QObject):
         if not isinstance(jobs, list):
             return []
         return [j for j in jobs if isinstance(j, dict)]
+
+    def fetch_diagnostics_async(self) -> None:
+        """Fetch daemon health + ``GET /v1/diagnostics`` in a worker thread (Daemon Diagnostics tab)."""
+        if self._stop.is_set():
+            return
+        if not self._diagnostics_fetch_lock.acquire(blocking=False):
+            return
+
+        def _run() -> None:
+            try:
+                self._fetch_diagnostics_sync()
+            finally:
+                self._diagnostics_fetch_lock.release()
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _fetch_diagnostics_sync(self) -> None:
+        base = self._base()
+        if not base:
+            self.diagnostics_failed.emit("Remote base URL is not set (see Settings).")
+            return
+        try:
+            with httpx.Client(timeout=httpx.Timeout(10.0, connect=6.0)) as c:
+                hr = c.get(f"{base}/healthz")
+                hr.raise_for_status()
+        except Exception as e:
+            self.diagnostics_failed.emit(f"Daemon unreachable at {base}: {e}")
+            return
+        try:
+            with httpx.Client(timeout=httpx.Timeout(10.0, connect=6.0)) as c:
+                r = c.get(f"{base}/v1/diagnostics", headers=self._headers())
+            if r.status_code == 401:
+                self.diagnostics_failed.emit(
+                    "Daemon is reachable, but unauthorized (check the bearer token in Settings)."
+                )
+                return
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            self.diagnostics_failed.emit(f"Diagnostics request failed: {e}")
+            return
+        if isinstance(data, dict):
+            self.diagnostics_ready.emit(data)
+        else:
+            self.diagnostics_failed.emit("Unexpected diagnostics response from server.")
 
     def _headers(self) -> dict[str, str]:
         s = self._get_settings()

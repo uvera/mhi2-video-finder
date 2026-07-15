@@ -48,3 +48,31 @@ def test_build_date_display_falls_back_to_source_mtime_when_uninstalled(monkeypa
 
     out = build_info.build_date_display()
     assert out.endswith(" (dev)")
+
+
+def test_build_commit_display_uses_packaged_stamp_when_present(monkeypatch) -> None:
+    stamp_mod = types.ModuleType("mhi2_video_finder._build_stamp")
+    stamp_mod.BUILD_COMMIT = "abc1234"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "mhi2_video_finder._build_stamp", stamp_mod)
+
+    assert build_info.build_commit_display() == "abc1234"
+
+
+def test_build_commit_display_falls_back_to_local_git_head(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "mhi2_video_finder._build_stamp", None)
+
+    out = build_info.build_commit_display()
+
+    # This repo is a real git checkout in tests, so the fallback should resolve HEAD.
+    assert out == "unknown" or out.endswith(" (dev)")
+
+
+def test_build_commit_display_is_unknown_when_git_unavailable(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "mhi2_video_finder._build_stamp", None)
+
+    def _raise(*_args, **_kwargs):
+        raise FileNotFoundError("git not found")
+
+    monkeypatch.setattr(build_info.subprocess, "run", _raise)
+
+    assert build_info.build_commit_display() == "unknown"

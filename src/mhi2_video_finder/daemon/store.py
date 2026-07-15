@@ -303,6 +303,11 @@ class DaemonJobStore:
             )
             return [self._row_from_sql(r) for r in cur.fetchall()]
 
+    def count_by_status(self) -> dict[str, int]:
+        with self._lock:
+            cur = self._conn.execute("SELECT status, COUNT(*) FROM daemon_jobs GROUP BY status")
+            return {str(row[0]): int(row[1]) for row in cur.fetchall()}
+
     def list_stale_done(self, cutoff: float) -> list[DaemonJobRow]:
         """Jobs finished before ``cutoff`` (epoch seconds) and still ``done`` (retention sweep)."""
         with self._lock:

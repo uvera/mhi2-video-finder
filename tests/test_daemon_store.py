@@ -97,6 +97,26 @@ def test_store_repairs_invalid_status_rows_on_open(tmp_path: Path) -> None:
     store.close()
 
 
+def test_count_by_status(tmp_path: Path) -> None:
+    store = DaemonJobStore(tmp_path / "jobs.sqlite")
+    store.insert(
+        DaemonJobRow(job_id="a", url="https://www.youtube.com/watch?v=dQw4w9WgXcQ", status=JobStatus.DONE)
+    )
+    store.insert(
+        DaemonJobRow(job_id="b", url="https://www.youtube.com/watch?v=dQw4w9WgXcQ", status=JobStatus.DONE)
+    )
+    store.insert(
+        DaemonJobRow(
+            job_id="c", url="https://www.youtube.com/watch?v=dQw4w9WgXcQ", status=JobStatus.QUEUED
+        )
+    )
+
+    counts = store.count_by_status()
+
+    assert counts == {"done": 2, "queued": 1}
+    store.close()
+
+
 def test_list_stale_done_returns_only_old_finished_jobs(tmp_path: Path) -> None:
     store = DaemonJobStore(tmp_path / "jobs.sqlite")
     now = time.time()

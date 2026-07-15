@@ -86,6 +86,47 @@ def test_create_job_mocked_engine(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
         assert data["status"] == "queued"
 
 
+def test_diagnostics_endpoint(daemon_client: TestClient) -> None:
+    import mhi2_video_finder.daemon.app as app_mod
+    from mhi2_video_finder.daemon.models import DaemonJobRow, JobStatus
+
+    assert app_mod.store is not None
+    app_mod.store.insert(
+        DaemonJobRow(
+            job_id="diag-1",
+            url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            status=JobStatus.DONE,
+        )
+    )
+
+    r = daemon_client.get("/v1/diagnostics")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["app_version"]
+    assert "build_commit" in data
+    assert "build_date" in data
+    assert data["uptime_seconds"] >= 0
+    assert data["job_counts"]["done"] == 1
+    assert data["job_counts"]["total"] == 1
+
+
+def test_diagnostics_requires_bearer_when_configured(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("DAEMON_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("DAEMON_BEARER_TOKEN", "secret")
+    import importlib
+
+    import mhi2_video_finder.daemon.app as app_mod
+
+    importlib.reload(app_mod)
+    with TestClient(app_mod.app) as client:
+        r = client.get("/v1/diagnostics")
+        assert r.status_code == 401
+        r2 = client.get("/v1/diagnostics", headers={"Authorization": "Bearer secret"})
+        assert r2.status_code == 200
+
+
 def test_delete_job_endpoint(daemon_client: TestClient) -> None:
     import mhi2_video_finder.daemon.app as app_mod
     from mhi2_video_finder.daemon.models import DaemonJobRow, JobStatus

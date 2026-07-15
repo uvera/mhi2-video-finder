@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from mhi2_video_finder import __version__
+from mhi2_video_finder.build_info import build_commit_display, build_date_display
 from mhi2_video_finder.config import Settings, load_settings
 from mhi2_video_finder.debug_runtime_log import debug_startup_stderr_banner
 from mhi2_video_finder.debug_runtime_log import emit_debug_log as _debug_log
@@ -79,6 +80,7 @@ store: DaemonJobStore | None = None
 engine: JobEngine | None = None
 app_settings: Settings | None = None
 telegram_runner: TelegramBotRunner | None = None
+started_at: float | None = None
 
 _RETENTION_SWEEP_INTERVAL_SECONDS = 3600.0
 
@@ -103,8 +105,9 @@ async def _retention_sweep_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global store, engine, app_settings, telegram_runner
+    global store, engine, app_settings, telegram_runner, started_at
 
+    started_at = time.time()
     loop = asyncio.get_running_loop()
     debug_startup_stderr_banner("daemon")
     cfg_path = _config_path()
@@ -159,6 +162,35 @@ app = FastAPI(title="mhi2-video-finder daemon", lifespan=lifespan)
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok", "app_version": __version__}
+
+
+@app.get("/v1/diagnostics", dependencies=[Depends(require_bearer)])
+def diagnostics() -> dict[str, Any]:
+    assert store is not None
+    assert app_settings is not None
+    counts = store.count_by_status()
+    now = time.time()
+    since = started_at if started_at is not None else now
+    return {
+        "app_version": __version__,
+        "build_commit": build_commit_display(),
+        "build_date": build_date_display(),
+        "started_at": since,
+        "uptime_seconds": max(0.0, now - since),
+        "max_parallel_downloads": app_settings.max_parallel_downloads,
+        "max_parallel_converts": app_settings.max_parallel_converts,
+        "video_encoder": app_settings.video_encoder,
+        "job_retention_days": app_settings.job_retention_days,
+        "job_counts": {
+            "queued": counts.get("queued", 0),
+            "downloading": counts.get("downloading", 0),
+            "converting": counts.get("converting", 0),
+            "done": counts.get("done", 0),
+            "failed": counts.get("failed", 0),
+            "cancelled": counts.get("cancelled", 0),
+            "total": sum(counts.values()),
+        },
+    }
 
 
 @app.get("/v1/jobs", dependencies=[Depends(require_bearer)])

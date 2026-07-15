@@ -22,8 +22,12 @@ prepare() {
 
 build() {
 	cd "${_workdir}"
-	# Shown in the UI header (near the top tabs); gitignored, never committed.
-	date -u '+BUILD_DATE = "%Y-%m-%d %H:%M UTC"' > src/mhi2_video_finder/_build_stamp.py
+	# Shown in the UI header and daemon diagnostics; gitignored, never committed.
+	_commit="$(git -C "${startdir}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+	{
+		date -u '+BUILD_DATE = "%Y-%m-%d %H:%M UTC"'
+		echo "BUILD_COMMIT = \"${_commit}\""
+	} > src/mhi2_video_finder/_build_stamp.py
 	# Use system Python so a project .venv on PATH is not picked up.
 	/usr/bin/python -m build --wheel --no-isolation
 }

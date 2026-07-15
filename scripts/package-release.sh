@@ -14,8 +14,12 @@ fi
 STAMP="$ROOT/src/mhi2_video_finder/_build_stamp.py"
 cleanup() { rm -f "$STAMP"; }
 trap cleanup EXIT
-# Shown in the UI header (near the top tabs); gitignored, never committed.
-date -u '+BUILD_DATE = "%Y-%m-%d %H:%M UTC"' >"$STAMP"
+# Shown in the UI header and daemon diagnostics; gitignored, never committed.
+COMMIT="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+{
+	date -u '+BUILD_DATE = "%Y-%m-%d %H:%M UTC"'
+	echo "BUILD_COMMIT = \"${COMMIT}\""
+} >"$STAMP"
 
 "$PY" -m pip install -q build setuptools wheel 2>/dev/null || true
 "$PY" -m build --wheel --sdist --no-isolation

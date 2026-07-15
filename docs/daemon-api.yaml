@@ -30,6 +30,59 @@ paths:
                     description: Package version from the running daemon (for verifying deployments).
                     example: "0.5.1"
 
+  /v1/diagnostics:
+    get:
+      summary: Daemon diagnostics (uptime, build info, job counts)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Diagnostics snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  app_version:
+                    type: string
+                  build_commit:
+                    type: string
+                    description: Short git commit the running daemon was built from ("unknown" if not stamped).
+                  build_date:
+                    type: string
+                  started_at:
+                    type: number
+                    description: Epoch seconds when this daemon process started.
+                  uptime_seconds:
+                    type: number
+                  max_parallel_downloads:
+                    type: integer
+                  max_parallel_converts:
+                    type: integer
+                  video_encoder:
+                    type: string
+                  job_retention_days:
+                    type: integer
+                  job_counts:
+                    type: object
+                    properties:
+                      queued:
+                        type: integer
+                      downloading:
+                        type: integer
+                      converting:
+                        type: integer
+                      done:
+                        type: integer
+                      failed:
+                        type: integer
+                      cancelled:
+                        type: integer
+                      total:
+                        type: integer
+        "401":
+          description: Unauthorized
+
   /v1/jobs:
     get:
       summary: List jobs (recent)
