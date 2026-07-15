@@ -94,7 +94,8 @@ class Settings:
     h264_profile: str = "baseline"
     # Set to "" to omit (not recommended for MMI/MHI2). Examples: "3.0", "3.1", "4.0".
     h264_level: str = "3.1"
-    # libx264: slower presets = better quality at the same target bitrate (recommended for USB); veryfast/ultrafast = faster encodes.
+    # libx264: slower presets = better quality at the same target bitrate (recommended for
+    # USB); veryfast/ultrafast = faster encodes.
     preset: str = "medium"
     # libx264 only. Try "zerolatency" for a small speed bump (slightly worse compression). "" = omit.
     h264_tune: str = ""
@@ -102,7 +103,8 @@ class Settings:
     ffmpeg_threads: int = 0
     # Unix only: add this much niceness (0–19) so ffmpeg yields CPU to other apps. 0 = unchanged.
     ffmpeg_nice: int = 0
-    # If 1–100 and ``cpulimit`` is on PATH, cap average CPU (per process tree). 0 = off. Linux: pacman -S cpulimit
+    # If 1–100 and ``cpulimit`` is on PATH, cap average CPU (per process tree). 0 = off.
+    # Linux: pacman -S cpulimit
     ffmpeg_cpu_limit_percent: int = 0
     # GUI / CLI: concurrent yt-dlp downloads and ffmpeg encodes (each ≥ 1).
     max_parallel_downloads: int = 4

@@ -83,11 +83,11 @@ def _pick_index(n: int, choice: int | None) -> int:
     try:
         line = input(f"Enter number (1–{n}) or 0 to cancel: ")
     except EOFError:
-        raise typer.Abort()
+        raise typer.Abort() from None
     try:
         idx = int(line.strip())
     except ValueError:
-        raise typer.BadParameter("invalid number")
+        raise typer.BadParameter("invalid number") from None
     if idx == 0:
         raise typer.Abort()
     if idx < 1 or idx > n:
@@ -361,7 +361,7 @@ def cmd_interactive(
     try:
         src = input("Source  [1] YouTube search  [2] Channel videos [1]: ").strip() or "1"
     except EOFError:
-        raise typer.Abort()
+        raise typer.Abort() from None
 
     rows: list[VideoCandidate] = []
     subdir_default = "interactive"
@@ -370,7 +370,7 @@ def cmd_interactive(
         try:
             ch = input("Channel (@handle or full URL): ").strip()
         except EOFError:
-            raise typer.Abort()
+            raise typer.Abort() from None
         if not ch:
             typer.echo("Channel required.", err=True)
             raise typer.Exit(1)
@@ -382,7 +382,7 @@ def cmd_interactive(
             try:
                 q = input("Search query: ").strip()
             except EOFError:
-                raise typer.Abort()
+                raise typer.Abort() from None
             if not q:
                 typer.echo("Query required.", err=True)
                 raise typer.Exit(1)
@@ -390,7 +390,7 @@ def cmd_interactive(
                 artist = input("Artist (optional, for template — Enter to skip): ").strip() or None
                 title = input("Song title (optional): ").strip() or None
             except EOFError:
-                raise typer.Abort()
+                raise typer.Abort() from None
             typer.echo("Searching (YouTube Data API)…", err=True)
             _, rows = _gather_rows_cli(
                 s,
@@ -414,7 +414,7 @@ def cmd_interactive(
                     q = input("Search query: ").strip()
                     title = None
             except EOFError:
-                raise typer.Abort()
+                raise typer.Abort() from None
             if artist:
                 typer.echo("Searching…", err=True)
                 _, rows = _gather_rows_cli(
@@ -457,7 +457,7 @@ def cmd_interactive(
             "Pick video(s) to download — one number, comma list (1,3), range (2-4), or 'all' — 0 to cancel: "
         ).strip()
     except EOFError:
-        raise typer.Abort()
+        raise typer.Abort() from None
     picked = parse_multi_pick(pick_line, len(rows))
     if not picked:
         typer.echo("Cancelled.", err=True)
@@ -472,7 +472,7 @@ def cmd_interactive(
                 prompt = f"Subfolder under {base_out} [{subdir_default}]: "
                 folder_name = input(prompt).strip() or subdir_default
             except EOFError:
-                raise typer.Abort()
+                raise typer.Abort() from None
 
     out_folder = ensure_and_print_output_dir(base_out / folder_name)
 

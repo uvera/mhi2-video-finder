@@ -209,7 +209,8 @@ def last_out_time_ms_from_progress_file(progress_path: Path) -> int | None:
 
 
 def insert_ffmpeg_progress_path(cmd: list[str], progress_path: Path) -> list[str]:
-    """Insert ``-progress <path>`` immediately after ``ffmpeg`` / optional ``-y`` (keeps stderr for errors)."""
+    """Insert ``-progress <path>`` immediately after ``ffmpeg`` / optional ``-y`` (keeps stderr
+    for errors)."""
     if len(cmd) < 1 or _ffmpeg_binary_name(cmd[0]) != "ffmpeg":
         raise ValueError("expected ffmpeg command list")
     extra = ["-progress", str(progress_path)]
@@ -219,7 +220,8 @@ def insert_ffmpeg_progress_path(cmd: list[str], progress_path: Path) -> list[str
 
 
 def insert_ffmpeg_progress_args(cmd: list[str], progress_path: Path) -> list[str]:
-    """Legacy: insert ``-nostats -loglevel error -progress <path>`` (prefer stderr-based :func:`run_ffmpeg_with_progress`)."""
+    """Legacy: insert ``-nostats -loglevel error -progress <path>`` (prefer stderr-based
+    :func:`run_ffmpeg_with_progress`)."""
     if len(cmd) < 2 or cmd[0] != "ffmpeg":
         raise ValueError("expected ffmpeg command list")
     extra = ["-nostats", "-loglevel", "error", "-progress", str(progress_path)]

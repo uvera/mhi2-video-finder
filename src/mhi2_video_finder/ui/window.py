@@ -57,13 +57,6 @@ from mhi2_video_finder.workflow import (
 
 from .backends.remote import RemoteJobController
 from .job_store import JobStore
-
-# Stored in QComboBox userData; must match config ``video_encoder`` values.
-_ENCODER_CHOICES: tuple[tuple[str, str], ...] = (
-    ("libx264 (CPU — best for picky car USB / MHI2)", "libx264"),
-    ("h264_vaapi (Intel / AMD GPU)", "h264_vaapi"),
-    ("h264_nvenc (NVIDIA GPU)", "h264_nvenc"),
-)
 from .models import UiJob
 from .workers import (
     BulkUrlResolveWorker,
@@ -77,6 +70,13 @@ from .workers import (
     LibraryScanWorker,
     SearchWorker,
     new_job_id,
+)
+
+# Stored in QComboBox userData; must match config ``video_encoder`` values.
+_ENCODER_CHOICES: tuple[tuple[str, str], ...] = (
+    ("libx264 (CPU — best for picky car USB / MHI2)", "libx264"),
+    ("h264_vaapi (Intel / AMD GPU)", "h264_vaapi"),
+    ("h264_nvenc (NVIDIA GPU)", "h264_nvenc"),
 )
 
 # Remote-download target subfolder for jobs imported from the daemon (Telegram / API), not from this UI queue.
@@ -2498,7 +2498,6 @@ class MainWindow(QMainWindow):
         self._show_status_message(err, kind="error")
 
     def _library_on_scan_finished(self, paths_as_strs: object) -> None:
-        root = self._library_root
         if not isinstance(paths_as_strs, list):
             self.library_scan_btn.setEnabled(True)
             self._show_status_message("Scan returned unexpected data.", kind="error")

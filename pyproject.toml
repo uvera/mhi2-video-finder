@@ -66,6 +66,12 @@ select = ["E", "F", "W", "I", "UP", "B"]
 [tool.ruff.lint.isort]
 known-first-party = ["mhi2_video_finder"]
 
+[tool.ruff.lint.flake8-bugbear]
+# typer.Option()/typer.Argument() as argument defaults is the library's
+# documented, required pattern (Typer inspects these objects at import time),
+# not the mutable-default-argument bug B008 exists to catch.
+extend-immutable-calls = ["typer.Option", "typer.Argument"]
+
 [tool.mypy]
 python_version = "3.11"
 mypy_path = "src"
