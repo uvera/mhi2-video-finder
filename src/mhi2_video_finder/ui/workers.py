@@ -136,21 +136,23 @@ class BulkUrlResolveWorker(QThread):
         self.finished_ok.emit(ok, failures)
 
 
-class DownloadService(QObject):
-    """Parallel downloads with per-job cancel."""
+class _ThreadPoolJobService(QObject):
+    """Shared executor lifecycle/cancellation bookkeeping for per-job thread-pool services."""
 
-    progress = pyqtSignal(str, float, str, str)  # id, pct, speed, eta
-    item_done = pyqtSignal(str, str, object)  # id, raw_path str, yinfo
-    item_failed = pyqtSignal(str, str)
-    download_cancelled = pyqtSignal(str)
-
-    def __init__(self, settings: Settings, parent=None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        max_workers_setting: int,
+        thread_name_prefix: str,
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         self._settings = settings
-        self._max_workers = max(1, min(32, int(settings.max_parallel_downloads)))
+        self._thread_name_prefix = thread_name_prefix
+        self._max_workers = max(1, min(32, int(max_workers_setting)))
         self._executor = ThreadPoolExecutor(
             max_workers=self._max_workers,
-            thread_name_prefix="vf-dl",
+            thread_name_prefix=thread_name_prefix,
         )
         self._lock = threading.Lock()
         self._pending_cancel: set[str] = set()
@@ -167,36 +169,76 @@ class DownloadService(QObject):
             if self._stopped or n == self._max_workers:
                 return
             old = self._executor
-            self._executor = ThreadPoolExecutor(max_workers=n, thread_name_prefix="vf-dl")
+            self._executor = ThreadPoolExecutor(max_workers=n, thread_name_prefix=self._thread_name_prefix)
             self._max_workers = n
         old.shutdown(wait=True, cancel_futures=False)
 
-    def cancel_download(self, job_id: str) -> None:
+    def _cancel(self, job_id: str) -> None:
         with self._lock:
             if job_id in self._abort_events:
                 self._abort_events[job_id].set()
             else:
                 self._pending_cancel.add(job_id)
 
-    def enqueue(self, job_id: str, url: str) -> None:
+    def _submit(self, fn: Any, *args: Any) -> None:
         with self._lock:
             if self._stopped:
                 return
         try:
-            self._executor.submit(self._run_download, job_id, url)
+            self._executor.submit(fn, *args)
         except RuntimeError:
             pass
 
-    def _run_download(self, job_id: str, url: str) -> None:
+    def _begin_job(self, job_id: str) -> tuple[threading.Event, bool] | None:
+        """Returns (abort_event, was_pending_cancelled), or None if stopped
+        (in which case the caller must not run the job and must not signal)."""
         with self._lock:
             if self._stopped:
-                return
+                return None
             if job_id in self._pending_cancel:
                 self._pending_cancel.discard(job_id)
-                self.download_cancelled.emit(job_id)
-                return
+                return threading.Event(), True
             ev = threading.Event()
             self._abort_events[job_id] = ev
+            return ev, False
+
+    def _end_job(self, job_id: str) -> None:
+        with self._lock:
+            self._abort_events.pop(job_id, None)
+
+    def stop(self) -> None:
+        with self._lock:
+            self._stopped = True
+            for ev in list(self._abort_events.values()):
+                ev.set()
+        self._executor.shutdown(wait=True, cancel_futures=True)
+
+
+class DownloadService(_ThreadPoolJobService):
+    """Parallel downloads with per-job cancel."""
+
+    progress = pyqtSignal(str, float, str, str)  # id, pct, speed, eta
+    item_done = pyqtSignal(str, str, object)  # id, raw_path str, yinfo
+    item_failed = pyqtSignal(str, str)
+    download_cancelled = pyqtSignal(str)
+
+    def __init__(self, settings: Settings, parent=None) -> None:
+        super().__init__(settings, settings.max_parallel_downloads, "vf-dl", parent)
+
+    def cancel_download(self, job_id: str) -> None:
+        self._cancel(job_id)
+
+    def enqueue(self, job_id: str, url: str) -> None:
+        self._submit(self._run_download, job_id, url)
+
+    def _run_download(self, job_id: str, url: str) -> None:
+        begun = self._begin_job(job_id)
+        if begun is None:
+            return
+        ev, was_pending_cancelled = begun
+        if was_pending_cancelled:
+            self.download_cancelled.emit(job_id)
+            return
 
         cache = self._settings.merged_raw_cache_dir()
 
@@ -217,18 +259,10 @@ class DownloadService(QObject):
         except Exception as e:
             self.item_failed.emit(job_id, str(e))
         finally:
-            with self._lock:
-                self._abort_events.pop(job_id, None)
-
-    def stop(self) -> None:
-        with self._lock:
-            self._stopped = True
-            for ev in list(self._abort_events.values()):
-                ev.set()
-        self._executor.shutdown(wait=True, cancel_futures=True)
+            self._end_job(job_id)
 
 
-class ConvertService(QObject):
+class ConvertService(_ThreadPoolJobService):
     """Parallel transcodes with per-job cancel."""
 
     progress = pyqtSignal(str, object)  # id, percent float or None for indeterminate
@@ -237,38 +271,11 @@ class ConvertService(QObject):
     convert_cancelled = pyqtSignal(str)
 
     def __init__(self, settings: Settings, *, no_embed: bool, parent=None) -> None:
-        super().__init__(parent)
-        self._settings = settings
+        super().__init__(settings, settings.max_parallel_converts, "vf-cv", parent)
         self._no_embed = no_embed
-        self._max_workers = max(1, min(32, int(settings.max_parallel_converts)))
-        self._executor = ThreadPoolExecutor(
-            max_workers=self._max_workers,
-            thread_name_prefix="vf-cv",
-        )
-        self._lock = threading.Lock()
-        self._pending_cancel: set[str] = set()
-        self._abort_events: dict[str, threading.Event] = {}
-        self._stopped = False
-
-    def set_settings(self, settings: Settings) -> None:
-        self._settings = settings
-
-    def set_max_workers(self, n: int) -> None:
-        n = max(1, min(32, int(n)))
-        with self._lock:
-            if self._stopped or n == self._max_workers:
-                return
-            old = self._executor
-            self._executor = ThreadPoolExecutor(max_workers=n, thread_name_prefix="vf-cv")
-            self._max_workers = n
-        old.shutdown(wait=True, cancel_futures=False)
 
     def cancel_convert(self, job_id: str) -> None:
-        with self._lock:
-            if job_id in self._abort_events:
-                self._abort_events[job_id].set()
-            else:
-                self._pending_cancel.add(job_id)
+        self._cancel(job_id)
 
     def set_no_embed(self, v: bool) -> None:
         self._no_embed = v
@@ -282,13 +289,7 @@ class ConvertService(QObject):
         *,
         no_embed: bool,
     ) -> None:
-        with self._lock:
-            if self._stopped:
-                return
-        try:
-            self._executor.submit(self._run_convert, job_id, raw_path, out_path, yinfo, no_embed)
-        except RuntimeError:
-            pass
+        self._submit(self._run_convert, job_id, raw_path, out_path, yinfo, no_embed)
 
     def _run_convert(
         self,
@@ -298,15 +299,13 @@ class ConvertService(QObject):
         yinfo: dict[str, Any] | None,
         no_embed: bool,
     ) -> None:
-        with self._lock:
-            if self._stopped:
-                return
-            if job_id in self._pending_cancel:
-                self._pending_cancel.discard(job_id)
-                self.convert_cancelled.emit(job_id)
-                return
-            ev = threading.Event()
-            self._abort_events[job_id] = ev
+        begun = self._begin_job(job_id)
+        if begun is None:
+            return
+        ev, was_cancelled = begun
+        if was_cancelled:
+            self.convert_cancelled.emit(job_id)
+            return
 
         def on_prog(p: float | None, jid: str = job_id) -> None:
             self.progress.emit(jid, p)
@@ -326,15 +325,7 @@ class ConvertService(QObject):
         except Exception as e:
             self.item_failed.emit(job_id, str(e))
         finally:
-            with self._lock:
-                self._abort_events.pop(job_id, None)
-
-    def stop(self) -> None:
-        with self._lock:
-            self._stopped = True
-            for ev in list(self._abort_events.values()):
-                ev.set()
-        self._executor.shutdown(wait=True, cancel_futures=True)
+            self._end_job(job_id)
 
 
 class LibraryScanWorker(QThread):
