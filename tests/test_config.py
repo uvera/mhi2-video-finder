@@ -8,6 +8,9 @@ import pytest
 
 from mhi2_video_finder.config import (
     Settings,
+    _build_libx264_args,
+    _build_nvenc_args,
+    _build_vaapi_args,
     build_ffmpeg_command,
     build_ffmpeg_video_filter,
     build_ffmpeg_video_filter_vaapi,
@@ -211,3 +214,49 @@ def test_load_settings_mp4_compat_mode_from_env(monkeypatch: pytest.MonkeyPatch,
     monkeypatch.setenv("MHI2_VIDEO_FINDER_LIBRARY_BULK_INFER_MP4_COMPAT_MODE", "true")
     s = load_settings(tmp_path / "nope.toml")
     assert s.library_bulk_infer_mp4_compat_mode is True
+
+
+def test_build_nvenc_args_includes_profile_and_level_when_set() -> None:
+    s = Settings(h264_profile="high", h264_level="4.1", nvenc_preset="p4")
+    args = _build_nvenc_args(s, 2_000_000, 2_000_000, 4_000_000)
+    assert args[:4] == ["-c:v", "h264_nvenc", "-preset", "p4"]
+    assert "-profile:v" in args and args[args.index("-profile:v") + 1] == "high"
+    assert "-level:v" in args and args[args.index("-level:v") + 1] == "4.1"
+    assert args[-2:] == ["-pix_fmt", "yuv420p"]
+
+
+def test_build_nvenc_args_omits_profile_and_level_when_blank() -> None:
+    s = Settings(h264_profile="", h264_level="")
+    args = _build_nvenc_args(s, 1, 2, 3)
+    assert "-profile:v" not in args
+    assert "-level:v" not in args
+
+
+def test_build_vaapi_args_maps_profile_and_level_to_ids() -> None:
+    s = Settings(h264_profile="baseline", h264_level="3.1", vaapi_cbr=True)
+    args = _build_vaapi_args(s, 1, 2, 3)
+    assert args[:2] == ["-c:v", "h264_vaapi"]
+    assert args[args.index("-profile:v") + 1] == "578"
+    assert args[args.index("-level:v") + 1] == "31"
+    assert "-rc_mode" in args
+    assert args[-2:] == ["-pix_fmt", "vaapi"]
+
+
+def test_build_vaapi_args_omits_rc_mode_when_cbr_disabled() -> None:
+    s = Settings(vaapi_cbr=False)
+    args = _build_vaapi_args(s, 1, 2, 3)
+    assert "-rc_mode" not in args
+
+
+def test_build_libx264_args_includes_tune_when_set() -> None:
+    s = Settings(h264_profile="high", h264_level="4.0", h264_tune="zerolatency", preset="fast")
+    args = _build_libx264_args(s, 1, 2, 3)
+    assert args[:4] == ["-c:v", "libx264", "-profile:v", "high"]
+    assert "-tune" in args and args[args.index("-tune") + 1] == "zerolatency"
+    assert args[-2:] == ["-pix_fmt", "yuv420p"]
+
+
+def test_build_libx264_args_omits_tune_when_blank() -> None:
+    s = Settings(h264_tune="")
+    args = _build_libx264_args(s, 1, 2, 3)
+    assert "-tune" not in args
