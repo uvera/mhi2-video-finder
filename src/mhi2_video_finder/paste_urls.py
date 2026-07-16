@@ -36,11 +36,7 @@ def _normalize_youtube_url_fragment(raw: str) -> str | None:
         vid = path.strip("/").split("/")[0]
         return f"https://www.youtube.com/watch?v={vid}" if _YT_ID.match(vid) else None
 
-    if not (
-        host == "youtube.com"
-        or host.endswith(".youtube.com")
-        or host.endswith("youtube-nocookie.com")
-    ):
+    if not (host == "youtube.com" or host.endswith(".youtube.com") or host.endswith("youtube-nocookie.com")):
         return None
 
     segs = [x for x in path.split("/") if x]

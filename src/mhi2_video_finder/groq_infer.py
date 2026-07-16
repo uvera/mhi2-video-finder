@@ -15,13 +15,15 @@ class GroqInferenceError(Exception):
     """API or parse failure."""
 
 
-_SYSTEM_PROMPT = """You help identify music video files. Given a filename, optional folder/path hint, and technical media summary, \
+_SYSTEM_PROMPT = """You help identify music video files. Given a filename, optional folder/path hint, \
+and technical media summary, \
 infer the performing artist and song title. Respond with a single JSON object only, no markdown, with keys:
 "author" (string) and "song_name" (string). Use empty string if unknown. Do not include other keys.
 CRITICAL CONSTRAINT: For "author" and "song_name", only use words/tokens that already exist in the filename.
 Do not invent, correct, translate, or expand words beyond the filename tokens.
 You may reorder filename tokens, and you may omit tokens.
-You may use spaces and punctuation for formatting, but every alphanumeric token in output must be from the filename.
+You may use spaces and punctuation for formatting, but every alphanumeric token in output must be \
+from the filename.
 If no reliable answer can be formed from filename tokens alone, return empty string."""
 
 

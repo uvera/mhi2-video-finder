@@ -86,9 +86,8 @@ def debug_startup_stderr_banner(component: str = "daemon") -> None:
     try:
         paths = _candidate_log_paths()
         explicit = (os.environ.get("MHI2_VF_DEBUG_LOG_PATH") or "").strip()
-        msg = (
-            f"mhi2-vf[{component}]: NDJSON debug paths (explicit={explicit!r}): "
-            + " -> ".join(str(p) for p in paths)
+        msg = f"mhi2-vf[{component}]: NDJSON debug paths (explicit={explicit!r}): " + " -> ".join(
+            str(p) for p in paths
         )
         log_daemon_visible(msg)
     except Exception:

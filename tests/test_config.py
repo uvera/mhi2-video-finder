@@ -193,7 +193,7 @@ def test_settings_parallel_defaults() -> None:
 
 def test_save_settings_merges_unknown_keys(tmp_path: Path) -> None:
     cfg = tmp_path / "config.toml"
-    cfg.write_text('search_limit = 3\nfoo = 99\n', encoding="utf-8")
+    cfg.write_text("search_limit = 3\nfoo = 99\n", encoding="utf-8")
     s = load_settings(cfg)
     s.max_parallel_downloads = 2
     s.ffmpeg_nice = 10
@@ -207,9 +207,7 @@ def test_save_settings_merges_unknown_keys(tmp_path: Path) -> None:
     assert s2.ffmpeg_nice == 10
 
 
-def test_load_settings_mp4_compat_mode_from_env(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_load_settings_mp4_compat_mode_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("MHI2_VIDEO_FINDER_LIBRARY_BULK_INFER_MP4_COMPAT_MODE", "true")
     s = load_settings(tmp_path / "nope.toml")
     assert s.library_bulk_infer_mp4_compat_mode is True

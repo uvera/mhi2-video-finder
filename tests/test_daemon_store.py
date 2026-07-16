@@ -106,9 +106,7 @@ def test_count_by_status(tmp_path: Path) -> None:
         DaemonJobRow(job_id="b", url="https://www.youtube.com/watch?v=dQw4w9WgXcQ", status=JobStatus.DONE)
     )
     store.insert(
-        DaemonJobRow(
-            job_id="c", url="https://www.youtube.com/watch?v=dQw4w9WgXcQ", status=JobStatus.QUEUED
-        )
+        DaemonJobRow(job_id="c", url="https://www.youtube.com/watch?v=dQw4w9WgXcQ", status=JobStatus.QUEUED)
     )
 
     counts = store.count_by_status()

@@ -20,8 +20,7 @@ def test_parse_without_scheme_normalizes() -> None:
 
 def test_parse_encoded_pp_param() -> None:
     line = (
-        "https://www.youtube.com/watch?v=KzCIULteklo&list=RDKzCIULteklo"
-        "&start_radio=1&pp=ygUEY29ieaAHAQ%3D%3D"
+        "https://www.youtube.com/watch?v=KzCIULteklo&list=RDKzCIULteklo&start_radio=1&pp=ygUEY29ieaAHAQ%3D%3D"
     )
     assert parse_pasted_video_urls(line) == ["https://www.youtube.com/watch?v=KzCIULteklo"]
 
@@ -41,8 +40,5 @@ def test_parse_multiple_lines_dedupes() -> None:
 
 
 def test_skips_hash_lines() -> None:
-    text = (
-        "# https://www.youtube.com/watch?v=abc12345678\n"
-        "https://www.youtube.com/watch?v=def45678901\n"
-    )
+    text = "# https://www.youtube.com/watch?v=abc12345678\nhttps://www.youtube.com/watch?v=def45678901\n"
     assert parse_pasted_video_urls(text) == ["https://www.youtube.com/watch?v=def45678901"]

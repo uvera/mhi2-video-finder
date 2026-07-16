@@ -190,6 +190,17 @@ remote_download_dir = "~/Videos/mhi2-video-finder-remote"
 remote_auto_download = false
 ```
 
+## Development
+
+```bash
+pip install -e ".[dev,daemon]"
+pre-commit install   # runs ruff check --fix + ruff format on every commit
+```
+
+- `pytest -q` — full test suite.
+- `ruff check src tests` / `ruff format src tests` — lint / format (also run in CI on every PR; `ruff format --check` fails CI if the repo isn't already formatted).
+- `mypy src` — advisory type check; not yet enforced in CI or pre-commit (the codebase has no prior type-checking history — see `[tool.mypy]` in `pyproject.toml`).
+
 ## Arch Linux packaging (AUR)
 
 Upstream ships an AUR-style recipe under [`aur/`](aur/):

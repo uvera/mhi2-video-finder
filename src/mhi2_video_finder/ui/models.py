@@ -21,7 +21,8 @@ class UiJob:
     remote_saved_locally: bool = True
     # Remote: daemon job id (REST/WS); local job_id stays stable for the UI row
     remote_job_id: str | None = None
-    # Remote: "desktop" = queued from this app (may auto-download when done); "remote_sync" = imported from daemon list (manual save only)
+    # Remote: "desktop" = queued from this app (may auto-download when done); "remote_sync" =
+    # imported from daemon list (manual save only)
     remote_job_origin: str = "desktop"
     # Download phase
     download_status: str = "queued"  # queued | downloading | done | failed

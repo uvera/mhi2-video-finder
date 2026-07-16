@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import threading
 from functools import partial
 from pathlib import Path
-import threading
-from typing import Any, Literal
+from typing import Literal
 
 import httpx
 from PyQt6.QtCore import QEvent, QObject, QSize, Qt, QTimer, pyqtSignal
@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -31,11 +32,10 @@ from PyQt6.QtWidgets import (
     QSpinBox,
     QStyle,
     QSystemTrayIcon,
-    QTabWidget,
-    QTextEdit,
-    QHeaderView,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -43,9 +43,9 @@ from PyQt6.QtWidgets import (
 from mhi2_video_finder import __version__
 from mhi2_video_finder.build_info import build_date_display
 from mhi2_video_finder.config import Settings, default_config_path, load_settings, save_settings
+from mhi2_video_finder.local_library import LibraryFileRow
 from mhi2_video_finder.paste_urls import parse_pasted_video_urls
 from mhi2_video_finder.search import VideoCandidate
-from mhi2_video_finder.local_library import LibraryFileRow
 from mhi2_video_finder.workflow import (
     ensure_output_dir,
     infer_subdir_name,
@@ -57,13 +57,6 @@ from mhi2_video_finder.workflow import (
 
 from .backends.remote import RemoteJobController
 from .job_store import JobStore
-
-# Stored in QComboBox userData; must match config ``video_encoder`` values.
-_ENCODER_CHOICES: tuple[tuple[str, str], ...] = (
-    ("libx264 (CPU — best for picky car USB / MHI2)", "libx264"),
-    ("h264_vaapi (Intel / AMD GPU)", "h264_vaapi"),
-    ("h264_nvenc (NVIDIA GPU)", "h264_nvenc"),
-)
 from .models import UiJob
 from .workers import (
     BulkUrlResolveWorker,
@@ -77,6 +70,13 @@ from .workers import (
     LibraryScanWorker,
     SearchWorker,
     new_job_id,
+)
+
+# Stored in QComboBox userData; must match config ``video_encoder`` values.
+_ENCODER_CHOICES: tuple[tuple[str, str], ...] = (
+    ("libx264 (CPU — best for picky car USB / MHI2)", "libx264"),
+    ("h264_vaapi (Intel / AMD GPU)", "h264_vaapi"),
+    ("h264_nvenc (NVIDIA GPU)", "h264_nvenc"),
 )
 
 # Remote-download target subfolder for jobs imported from the daemon (Telegram / API), not from this UI queue.
@@ -254,12 +254,9 @@ class MainWindow(QMainWindow):
         self._message_text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._message_text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._message_text.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
         )
-        self._message_text.setStyleSheet(
-            "QTextEdit { border: 0; background: transparent; padding: 0; }"
-        )
+        self._message_text.setStyleSheet("QTextEdit { border: 0; background: transparent; padding: 0; }")
         self._message_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._message_text.setMinimumHeight(max(54, self.fontMetrics().height() * 3))
         self._message_text.setMaximumHeight(max(120, self.fontMetrics().height() * 8))
@@ -464,9 +461,7 @@ class MainWindow(QMainWindow):
         self._status_message_timer.start(duration_ms)
 
     def _remote_sync_import_root(self) -> Path:
-        return ensure_output_dir(
-            self._settings.merged_remote_download_dir() / _REMOTE_DAEMON_IMPORT_SUBDIR
-        )
+        return ensure_output_dir(self._settings.merged_remote_download_dir() / _REMOTE_DAEMON_IMPORT_SUBDIR)
 
     def _remote_sync_out_folder_for_channel(self, channel: str) -> Path:
         """Subfolder under daemon-imports from uploader/channel (same idea as CLI --infer-subdir)."""
@@ -507,12 +502,8 @@ class MainWindow(QMainWindow):
             return False
         if job.remote_fetch_in_progress:
             return False
-        return (
-            (self._settings.remote_auto_download and job.remote_job_origin == "desktop")
-            or (
-                self._remote_import_autosave_enabled()
-                and job.remote_job_origin == "remote_sync"
-            )
+        return (self._settings.remote_auto_download and job.remote_job_origin == "desktop") or (
+            self._remote_import_autosave_enabled() and job.remote_job_origin == "remote_sync"
         )
 
     def _on_remote_daemon_jobs_imported(self, rows: object) -> None:
@@ -753,11 +744,7 @@ class MainWindow(QMainWindow):
                 if self._remote and job.remote_job_origin == "remote_sync" and not job.remote_saved_locally:
                     if self._recompute_remote_sync_out_path_if_needed(job):
                         self._persist_job(job)
-                if (
-                    self._remote
-                    and job.remote_job_id
-                    and self._needs_remote_status_sync_for_job(job)
-                ):
+                if self._remote and job.remote_job_id and self._needs_remote_status_sync_for_job(job):
                     self._remote.register_existing(jid, job.remote_job_id)
                     self._remote.sync_job_from_server(jid, job.remote_job_id)
                 elif self._should_autosave_remote_job(job):
@@ -904,7 +891,9 @@ class MainWindow(QMainWindow):
         ga = self.ui_groq_api_key.text().strip()
         self._settings.groq_api_key = ga if ga else None
         self._settings.groq_model = self.ui_groq_model.text().strip() or "llama-3.1-8b-instant"
-        self._settings.groq_base_url = self.ui_groq_base_url.text().strip() or "https://api.groq.com/openai/v1"
+        self._settings.groq_base_url = (
+            self.ui_groq_base_url.text().strip() or "https://api.groq.com/openai/v1"
+        )
         self._settings.groq_temperature = float(self.ui_groq_temperature.value())
 
         if hasattr(self, "library_skip_tagged_cb"):
@@ -1167,7 +1156,9 @@ class MainWindow(QMainWindow):
         self.ui_video_encoder.currentIndexChanged.connect(self._on_video_encoder_changed)
         og.addWidget(self.ui_video_encoder, 0, 1)
         self.ui_embed_metadata = QCheckBox("Embed title / artist / album metadata (from yt-dlp)")
-        self.ui_embed_metadata.setToolTip("When unchecked, ffmpeg skips -metadata tags from the download info.")
+        self.ui_embed_metadata.setToolTip(
+            "When unchecked, ffmpeg skips -metadata tags from the download info."
+        )
         og.addWidget(self.ui_embed_metadata, 1, 0, 1, 2)
         self.ui_embed_album_art = QCheckBox("Embed album art (adds MJPEG attached-picture stream)")
         self.ui_embed_album_art.setToolTip(
@@ -1312,9 +1303,13 @@ class MainWindow(QMainWindow):
             )
             return
 
-        self._settings = load_settings(Path(self.config_edit.text().strip()) if self.config_edit.text().strip() else None)
+        self._settings = load_settings(
+            Path(self.config_edit.text().strip()) if self.config_edit.text().strip() else None
+        )
         if self.use_api_cb.isChecked() and mode == "search" and not self._settings.youtube_api_key:
-            QMessageBox.warning(self, "API", "Set YOUTUBE_API_KEY or youtube_api_key in config for API search.")
+            QMessageBox.warning(
+                self, "API", "Set YOUTUBE_API_KEY or youtube_api_key in config for API search."
+            )
             return
 
         if self._search_worker and self._search_worker.isRunning():
@@ -1511,7 +1506,9 @@ class MainWindow(QMainWindow):
             )
             return
 
-        self._settings = load_settings(Path(self.config_edit.text().strip()) if self.config_edit.text().strip() else None)
+        self._settings = load_settings(
+            Path(self.config_edit.text().strip()) if self.config_edit.text().strip() else None
+        )
 
         if self._bulk_resolve_worker and self._bulk_resolve_worker.isRunning():
             self._bulk_resolve_worker.requestInterruption()
@@ -2163,8 +2160,7 @@ class MainWindow(QMainWindow):
 
     def _convert_try_start_more_groq_infers(self) -> None:
         while (
-            self._convert_infer_groq_slots_busy < _MAX_PARALLEL_LIBRARY_GROQ
-            and self._convert_infer_pending
+            self._convert_infer_groq_slots_busy < _MAX_PARALLEL_LIBRARY_GROQ and self._convert_infer_pending
         ):
             jid = self._convert_infer_pending.pop(0)
             self._convert_start_groq_for_job(jid)
@@ -2190,7 +2186,9 @@ class MainWindow(QMainWindow):
         w.probe_cached.connect(
             lambda _row, summary, jid=job_id: self._convert_on_groq_probe_cached(jid, summary)
         )
-        w.skipped.connect(lambda _row, reason, jid=job_id: self._convert_on_parallel_infer_skipped(jid, reason))
+        w.skipped.connect(
+            lambda _row, reason, jid=job_id: self._convert_on_parallel_infer_skipped(jid, reason)
+        )
         w.finished_ok.connect(
             lambda author, song, jid=job_id: self._convert_on_parallel_infer_ok(jid, author, song)
         )
@@ -2320,7 +2318,9 @@ class MainWindow(QMainWindow):
         top.addWidget(self.ui_library_folder, stretch=1)
         top.addWidget(br)
         self.library_scan_btn = QPushButton("Find all videos")
-        self.library_scan_btn.setToolTip("Discover every video file under this folder, including nested folders.")
+        self.library_scan_btn.setToolTip(
+            "Discover every video file under this folder, including nested folders."
+        )
         self.library_scan_btn.clicked.connect(self._library_scan)
         top.addWidget(self.library_scan_btn)
         lay.addLayout(top)
@@ -2337,9 +2337,7 @@ class MainWindow(QMainWindow):
         self.library_table.itemSelectionChanged.connect(self._library_on_selection_changed)
         self.library_table.setMinimumHeight(96)
         self.library_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.library_table.setSizeAdjustPolicy(
-            QAbstractScrollArea.SizeAdjustPolicy.AdjustIgnored
-        )
+        self.library_table.setSizeAdjustPolicy(QAbstractScrollArea.SizeAdjustPolicy.AdjustIgnored)
         # Fixed row height so row count does not inflate minimum tab height (fixes status bar clipping).
         vh = self.library_table.verticalHeader()
         vh.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
@@ -2500,7 +2498,6 @@ class MainWindow(QMainWindow):
         self._show_status_message(err, kind="error")
 
     def _library_on_scan_finished(self, paths_as_strs: object) -> None:
-        root = self._library_root
         if not isinstance(paths_as_strs, list):
             self.library_scan_btn.setEnabled(True)
             self._show_status_message("Scan returned unexpected data.", kind="error")
@@ -2847,8 +2844,7 @@ class MainWindow(QMainWindow):
 
     def _library_try_start_more_groq_infers(self) -> None:
         while (
-            self._library_infer_groq_slots_busy < _MAX_PARALLEL_LIBRARY_GROQ
-            and self._library_infer_pending
+            self._library_infer_groq_slots_busy < _MAX_PARALLEL_LIBRARY_GROQ and self._library_infer_pending
         ):
             row_idx = self._library_infer_pending.pop(0)
             self._library_start_groq_for_row(row_idx)
@@ -3477,11 +3473,7 @@ class MainWindow(QMainWindow):
     def _refresh_convert_table(self) -> None:
         selected_job_id = self._convert_current_job_id()
         # _job_order is append-only (oldest first); reverse it so the newest job is on top.
-        rows = [
-            self._jobs[j]
-            for j in reversed(self._job_order)
-            if self._jobs[j].download_status == "done"
-        ]
+        rows = [self._jobs[j] for j in reversed(self._job_order) if self._jobs[j].download_status == "done"]
         self.convert_table.blockSignals(True)
         self.convert_table.setRowCount(len(rows))
         for i, job in enumerate(rows):
@@ -3530,8 +3522,7 @@ class MainWindow(QMainWindow):
         cancel_btn.clicked.connect(lambda *, jid=job.job_id: self._cancel_convert_for_job(jid))
         restart_btn = QPushButton("Re-run conversion")
         restart_btn.setEnabled(
-            job.download_status == "done"
-            and job.convert_status in ("failed", "cancelled", "done")
+            job.download_status == "done" and job.convert_status in ("failed", "cancelled", "done")
         )
         restart_btn.clicked.connect(lambda *, jid=job.job_id: self._rerun_convert_for_job(jid))
         need_save = job.backend == "remote" and job.convert_status == "done"
@@ -3632,7 +3623,9 @@ class MainWindow(QMainWindow):
             return
         if not job.raw_path or not job.raw_path.is_file():
             self._requeue_full_pipeline(job)
-            self._status.setText(f"Raw cache missing, re-downloading before conversion: {job.candidate.title}")
+            self._status.setText(
+                f"Raw cache missing, re-downloading before conversion: {job.candidate.title}"
+            )
             return
         job.convert_status = "queued"
         job.convert_percent = 0.0

@@ -6,9 +6,10 @@ import json
 import logging
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import quote
 
 import httpx
@@ -606,6 +607,7 @@ class RemoteJobController(QObject):
     def _ws_loop(self) -> None:
         while not self._stop.is_set():
             try:
+
                 def on_open(ws: Any) -> None:
                     # Read current subscriptions at open-time (not loop-time): jobs can be
                     # re-registered while the socket is still connecting during client restart.

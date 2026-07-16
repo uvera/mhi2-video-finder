@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class JobStatus(str, Enum):
+class JobStatus(StrEnum):
     QUEUED = "queued"
     DOWNLOADING = "downloading"
     CONVERTING = "converting"
@@ -16,7 +16,7 @@ class JobStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-class JobPhase(str, Enum):
+class JobPhase(StrEnum):
     DOWNLOAD = "download"
     CONVERT = "convert"
 

@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import os
+import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
-
-import tomllib
 
 
 def _expand(p: str | Path) -> Path:
@@ -95,7 +94,8 @@ class Settings:
     h264_profile: str = "baseline"
     # Set to "" to omit (not recommended for MMI/MHI2). Examples: "3.0", "3.1", "4.0".
     h264_level: str = "3.1"
-    # libx264: slower presets = better quality at the same target bitrate (recommended for USB); veryfast/ultrafast = faster encodes.
+    # libx264: slower presets = better quality at the same target bitrate (recommended for
+    # USB); veryfast/ultrafast = faster encodes.
     preset: str = "medium"
     # libx264 only. Try "zerolatency" for a small speed bump (slightly worse compression). "" = omit.
     h264_tune: str = ""
@@ -103,7 +103,8 @@ class Settings:
     ffmpeg_threads: int = 0
     # Unix only: add this much niceness (0–19) so ffmpeg yields CPU to other apps. 0 = unchanged.
     ffmpeg_nice: int = 0
-    # If 1–100 and ``cpulimit`` is on PATH, cap average CPU (per process tree). 0 = off. Linux: pacman -S cpulimit
+    # If 1–100 and ``cpulimit`` is on PATH, cap average CPU (per process tree). 0 = off.
+    # Linux: pacman -S cpulimit
     ffmpeg_cpu_limit_percent: int = 0
     # GUI / CLI: concurrent yt-dlp downloads and ffmpeg encodes (each ≥ 1).
     max_parallel_downloads: int = 4
@@ -135,9 +136,7 @@ class Settings:
     processing_backend: str = "local"
     remote_base_url: str = ""
     remote_bearer_token: str = ""
-    remote_download_dir: Path = field(
-        default_factory=lambda: _expand("~/Videos/mhi2-video-finder-remote")
-    )
+    remote_download_dir: Path = field(default_factory=lambda: _expand("~/Videos/mhi2-video-finder-remote"))
     remote_auto_download: bool = False
     remote_auto_download_daemon_imports: bool = False
     # Daemon: delete a finished job's output file (and its record) this many days after

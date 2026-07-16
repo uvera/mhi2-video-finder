@@ -17,10 +17,6 @@ from pydantic import BaseModel
 from mhi2_video_finder import __version__
 from mhi2_video_finder.build_info import build_commit_display, build_date_display
 from mhi2_video_finder.config import Settings, load_settings
-from mhi2_video_finder.debug_runtime_log import debug_startup_stderr_banner
-from mhi2_video_finder.debug_runtime_log import emit_debug_log as _debug_log
-from mhi2_video_finder.debug_runtime_log import log_daemon_visible
-
 from mhi2_video_finder.daemon.auth import require_bearer, warn_if_auth_disabled, ws_token_ok
 from mhi2_video_finder.daemon.engine import JobEngine
 from mhi2_video_finder.daemon.hub import WsHub
@@ -28,6 +24,8 @@ from mhi2_video_finder.daemon.models import JobStatus
 from mhi2_video_finder.daemon.store import DaemonJobStore
 from mhi2_video_finder.daemon.telegram_bot import TelegramBotRunner
 from mhi2_video_finder.daemon.urlvalidate import validate_youtube_url
+from mhi2_video_finder.debug_runtime_log import debug_startup_stderr_banner, log_daemon_visible
+from mhi2_video_finder.debug_runtime_log import emit_debug_log as _debug_log
 from mhi2_video_finder.workflow import safe_stem
 
 

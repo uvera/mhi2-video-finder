@@ -15,18 +15,16 @@ from typing import Any
 from yt_dlp.utils import DownloadCancelled
 
 from mhi2_video_finder.config import Settings
+from mhi2_video_finder.daemon.hub import WsHub
+from mhi2_video_finder.daemon.models import DaemonJobRow, JobPhase, JobStatus
+from mhi2_video_finder.daemon.store import DaemonJobStore, ytdlp_info_from_json, ytdlp_info_to_json
+from mhi2_video_finder.daemon.urlvalidate import validate_youtube_url
 from mhi2_video_finder.debug_runtime_log import emit_debug_log as _debug_log
 from mhi2_video_finder.download import download_to_cache
 from mhi2_video_finder.exceptions import OperationCancelled
 from mhi2_video_finder.transcode import transcode
 from mhi2_video_finder.workflow import ensure_output_dir, safe_join, unique_out_path
-
-from mhi2_video_finder.daemon.hub import WsHub
-from mhi2_video_finder.daemon.models import DaemonJobRow, JobPhase, JobStatus
-from mhi2_video_finder.daemon.store import DaemonJobStore, ytdlp_info_from_json, ytdlp_info_to_json
-from mhi2_video_finder.daemon.urlvalidate import validate_youtube_url
 from mhi2_video_finder.ytdlp_progress_map import ytdlp_progress_percent_and_labels
-
 
 _DOWNLOAD_STUCK_SECONDS = 10.0
 
@@ -76,9 +74,7 @@ class JobEngine:
             max_workers=dl_workers, thread_name_prefix="vf-daemon-dl"
         )
         # Keep conversion isolated from downloads so new jobs can continue downloading.
-        self._convert_executor = ThreadPoolExecutor(
-            max_workers=cv_workers, thread_name_prefix="vf-daemon-cv"
-        )
+        self._convert_executor = ThreadPoolExecutor(max_workers=cv_workers, thread_name_prefix="vf-daemon-cv")
         # region agent log
         _debug_log(
             "H3",
@@ -284,7 +280,9 @@ class JobEngine:
             self._finish_cancelled(job_id)
             return
 
-        raw_ok = bool(row.raw_path and Path(row.raw_path).is_file() and Path(row.raw_path).stat().st_size > 4096)
+        raw_ok = bool(
+            row.raw_path and Path(row.raw_path).is_file() and Path(row.raw_path).stat().st_size > 4096
+        )
         # Resume after restart: skip download if raw cache still present
         if raw_ok:
             self._convert_executor.submit(self._run_convert_stage, job_id)

@@ -29,7 +29,5 @@ def test_ytdlp_progress_finished() -> None:
 
 
 def test_ytdlp_progress_unknown_total() -> None:
-    pct, _, _ = ytdlp_progress_percent_and_labels(
-        {"status": "downloading", "downloaded_bytes": 1000}
-    )
+    pct, _, _ = ytdlp_progress_percent_and_labels({"status": "downloading", "downloaded_bytes": 1000})
     assert pct < 0

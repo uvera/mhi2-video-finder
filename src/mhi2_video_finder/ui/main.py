@@ -34,7 +34,10 @@ def main() -> None:
     try:
         from PyQt6.QtWidgets import QApplication
     except ImportError:
-        print("PyQt6 is required for the UI. Install with: pip install 'mhi2-video-finder[gui]'", file=sys.stderr)
+        print(
+            "PyQt6 is required for the UI. Install with: pip install 'mhi2-video-finder[gui]'",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     from mhi2_video_finder.ui.window import MainWindow

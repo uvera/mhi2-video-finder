@@ -9,8 +9,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from mhi2_video_finder.debug_runtime_log import emit_debug_log as _debug_log
 from mhi2_video_finder.daemon.models import DaemonJobRow, JobPhase, JobStatus
+from mhi2_video_finder.debug_runtime_log import emit_debug_log as _debug_log
 
 
 class DaemonJobStore:
@@ -381,7 +381,11 @@ class DaemonJobStore:
                     "H10",
                     "daemon/store.py:358",
                     "sqlite update_meta failed",
-                    {"job_id": str(job_id), "error": str(e), "in_transaction": bool(self._conn.in_transaction)},
+                    {
+                        "job_id": str(job_id),
+                        "error": str(e),
+                        "in_transaction": bool(self._conn.in_transaction),
+                    },
                 )
                 raise
         elapsed_ms = int((time.monotonic() - started) * 1000)

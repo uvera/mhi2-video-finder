@@ -163,9 +163,7 @@ def test_diagnostics_endpoint(daemon_client: TestClient) -> None:
     assert data["job_counts"]["total"] == 1
 
 
-def test_diagnostics_requires_bearer_when_configured(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_diagnostics_requires_bearer_when_configured(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("DAEMON_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("DAEMON_BEARER_TOKEN", "secret")
     import importlib

@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install project (dev + daemon extras)
+        run: pip install -e ".[dev,daemon]"
+        # The `gui` extra (PyQt6) is deliberately not installed here: the two
+        # PyQt-dependent test files guard themselves with
+        # pytest.importorskip("PyQt6") and skip cleanly without it. Running
+        # them for real needs a Qt platform plugin (xvfb / QT_QPA_PLATFORM),
+        # which wasn't validated against this runner image for this change —
+        # do that as a separate, verified follow-up (tracked: enable gui-extra
+        # + xvfb in CI once headless Qt behavior is confirmed on this runner)
+        # rather than guessing here.
+
+      - name: ruff check
+        run: ruff check src tests
+
+      - name: ruff format --check
+        run: ruff format --check src tests
+
+      - name: pytest
+        run: pytest -q

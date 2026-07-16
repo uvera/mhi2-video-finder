@@ -13,8 +13,8 @@ from yt_dlp.utils import DownloadCancelled
 
 from mhi2_video_finder.config import Settings
 from mhi2_video_finder.download import download_to_cache
-from mhi2_video_finder.search import VideoCandidate
 from mhi2_video_finder.exceptions import OperationCancelled
+from mhi2_video_finder.search import VideoCandidate
 from mhi2_video_finder.transcode import transcode
 
 from .progress_util import ytdlp_progress_percent_and_labels
