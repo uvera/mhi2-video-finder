@@ -440,3 +440,67 @@ def test_download_stall_then_second_failure_cancels_job(
 
     store.close()
     engine.shutdown(wait=False)
+
+
+def test_load_active_job_returns_none_for_missing_job(tmp_path: Path) -> None:
+    engine, store = _new_engine(tmp_path)
+    assert engine._load_active_job("nope", cancel_requires_queued=False) is None
+    store.close()
+    engine.shutdown(wait=False)
+
+
+def test_load_active_job_returns_none_for_terminal_status(tmp_path: Path) -> None:
+    engine, store = _new_engine(tmp_path)
+    store.insert(
+        DaemonJobRow(job_id="j1", url="https://www.youtube.com/watch?v=dQw4w9WgXcQ", status=JobStatus.DONE)
+    )
+    assert engine._load_active_job("j1", cancel_requires_queued=False) is None
+    store.close()
+    engine.shutdown(wait=False)
+
+
+def test_load_active_job_cancel_requires_queued_lets_downloading_job_through(tmp_path: Path) -> None:
+    engine, store = _new_engine(tmp_path)
+    store.insert(
+        DaemonJobRow(
+            job_id="j1", url="https://www.youtube.com/watch?v=dQw4w9WgXcQ", status=JobStatus.DOWNLOADING
+        )
+    )
+    engine._abort_for("j1").set()
+    result = engine._load_active_job("j1", cancel_requires_queued=True)
+    assert result is not None
+    row, ev = result
+    assert row.job_id == "j1"
+    assert ev.is_set()
+    store.close()
+    engine.shutdown(wait=False)
+
+
+def test_load_active_job_cancel_requires_queued_stops_queued_job(tmp_path: Path) -> None:
+    engine, store = _new_engine(tmp_path)
+    store.insert(
+        DaemonJobRow(job_id="j1", url="https://www.youtube.com/watch?v=dQw4w9WgXcQ", status=JobStatus.QUEUED)
+    )
+    engine._abort_for("j1").set()
+    assert engine._load_active_job("j1", cancel_requires_queued=True) is None
+    row = store.get("j1")
+    assert row is not None
+    assert row.status == JobStatus.CANCELLED
+    store.close()
+    engine.shutdown(wait=False)
+
+
+def test_load_active_job_no_queued_requirement_stops_on_any_cancel(tmp_path: Path) -> None:
+    engine, store = _new_engine(tmp_path)
+    store.insert(
+        DaemonJobRow(
+            job_id="j1", url="https://www.youtube.com/watch?v=dQw4w9WgXcQ", status=JobStatus.DOWNLOADING
+        )
+    )
+    engine._abort_for("j1").set()
+    assert engine._load_active_job("j1", cancel_requires_queued=False) is None
+    row = store.get("j1")
+    assert row is not None
+    assert row.status == JobStatus.CANCELLED
+    store.close()
+    engine.shutdown(wait=False)

@@ -251,6 +251,22 @@ class JobEngine:
             else:
                 self._download_executor.submit(self._run_download_stage, row.job_id)
 
+    def _load_active_job(
+        self, job_id: str, *, cancel_requires_queued: bool
+    ) -> tuple[DaemonJobRow, threading.Event] | None:
+        row = self._store.get(job_id)
+        if not row:
+            return None
+        if row.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
+            return None
+
+        ev = self._abort_for(job_id)
+        is_cancelled = ev.is_set() and (row.status == JobStatus.QUEUED if cancel_requires_queued else True)
+        if is_cancelled:
+            self._finish_cancelled(job_id)
+            return None
+        return row, ev
+
     def _run_download_stage(self, job_id: str) -> None:
         # region agent log
         _debug_log(
@@ -265,20 +281,13 @@ class JobEngine:
             },
         )
         # endregion
-        row = self._store.get(job_id)
-        if not row:
+        loaded = self._load_active_job(job_id, cancel_requires_queued=True)
+        if loaded is None:
             return
-        if row.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
-            return
-
-        ev = self._abort_for(job_id)
+        row, ev = loaded
 
         def cancelled() -> bool:
             return ev.is_set()
-
-        if cancelled() and row.status == JobStatus.QUEUED:
-            self._finish_cancelled(job_id)
-            return
 
         raw_ok = bool(
             row.raw_path and Path(row.raw_path).is_file() and Path(row.raw_path).stat().st_size > 4096
@@ -437,20 +446,13 @@ class JobEngine:
             },
         )
         # endregion
-        row = self._store.get(job_id)
-        if not row:
+        loaded = self._load_active_job(job_id, cancel_requires_queued=False)
+        if loaded is None:
             return
-        if row.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
-            return
-
-        ev = self._abort_for(job_id)
+        row, ev = loaded
 
         def cancelled() -> bool:
             return ev.is_set()
-
-        if cancelled():
-            self._finish_cancelled(job_id)
-            return
 
         yinfo = ytdlp_info_from_json(row.ytdlp_info_json)
         raw_path = Path(row.raw_path) if row.raw_path else None
