@@ -58,6 +58,12 @@ from mhi2_video_finder.workflow import (
 from .backends.remote import RemoteJobController
 from .job_store import JobStore
 from .models import UiJob
+from .styles import (
+    DIAGNOSTICS_IDLE_STYLE,
+    DIAGNOSTICS_OFFLINE_STYLE,
+    DIAGNOSTICS_ONLINE_STYLE,
+    HINT_LABEL_STYLE,
+)
 from .workers import (
     BulkUrlResolveWorker,
     ConvertService,
@@ -1241,7 +1247,7 @@ class MainWindow(QMainWindow):
             "library_last_folder, AI assistant / Groq settings)."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid);")
+        hint.setStyleSheet(HINT_LABEL_STYLE)
         lay.addWidget(hint)
 
         row = QHBoxLayout()
@@ -1592,7 +1598,7 @@ class MainWindow(QMainWindow):
 
         top_row = QHBoxLayout()
         self._diag_status_label = QLabel("Status: —")
-        self._diag_status_label.setStyleSheet("font-weight: 600;")
+        self._diag_status_label.setStyleSheet(DIAGNOSTICS_IDLE_STYLE)
         top_row.addWidget(self._diag_status_label)
         top_row.addStretch(1)
         self._diag_refresh_btn = QPushButton("Refresh now")
@@ -1673,7 +1679,7 @@ class MainWindow(QMainWindow):
 
     def _on_diagnostics_ready(self, data: dict) -> None:
         self._diag_status_label.setText("Status: online")
-        self._diag_status_label.setStyleSheet("font-weight: 600; color: #2e7d32;")
+        self._diag_status_label.setStyleSheet(DIAGNOSTICS_ONLINE_STYLE)
         self._diag_version_val.setText(str(data.get("app_version") or "—"))
         self._diag_commit_val.setText(str(data.get("build_commit") or "—"))
         self._diag_build_date_val.setText(str(data.get("build_date") or "—"))
@@ -1692,7 +1698,7 @@ class MainWindow(QMainWindow):
 
     def _on_diagnostics_failed(self, reason: str) -> None:
         self._diag_status_label.setText(f"Status: offline — {reason}")
-        self._diag_status_label.setStyleSheet("font-weight: 600; color: #c62828;")
+        self._diag_status_label.setStyleSheet(DIAGNOSTICS_OFFLINE_STYLE)
 
     def _build_downloads_tab(self) -> QWidget:
         w = QWidget()
@@ -1832,7 +1838,7 @@ class MainWindow(QMainWindow):
             "Guess artist & song uses the selected row. Guess selected processes checked finished rows."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid);")
+        hint.setStyleSheet(HINT_LABEL_STYLE)
         lay.addWidget(hint)
         return w
 
@@ -2436,7 +2442,7 @@ class MainWindow(QMainWindow):
             "(same as Save). Configure the AI under Settings → AI assistant (or set GROQ_API_KEY)."
         )
         lib_hint.setWordWrap(True)
-        lib_hint.setStyleSheet("color: palette(mid);")
+        lib_hint.setStyleSheet(HINT_LABEL_STYLE)
         lib_hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         lay.addWidget(lib_hint)
 
