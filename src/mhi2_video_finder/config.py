@@ -346,6 +346,58 @@ def _vaapi_h264_level_id(level: str) -> int | None:
     return int(compact)
 
 
+def _build_nvenc_args(settings: Settings, vb: int, maxr: int, bufsize: int) -> list[str]:
+    args: list[str] = ["-c:v", "h264_nvenc", "-preset", settings.nvenc_preset.strip() or "p1"]
+    prof = (settings.h264_profile or "").strip()
+    if prof:
+        args.extend(["-profile:v", prof])
+    lvl = (settings.h264_level or "").strip()
+    if lvl:
+        args.extend(["-level:v", lvl])
+    args.extend(["-b:v", str(vb), "-maxrate", str(maxr), "-bufsize", str(bufsize), "-pix_fmt", "yuv420p"])
+    return args
+
+
+def _build_vaapi_args(settings: Settings, vb: int, maxr: int, bufsize: int) -> list[str]:
+    args: list[str] = ["-c:v", "h264_vaapi"]
+    prof = _vaapi_h264_profile_id(settings)
+    if prof is not None:
+        args.extend(["-profile:v", str(prof)])
+    lvl = _vaapi_h264_level_id(settings.h264_level)
+    if lvl is not None:
+        args.extend(["-level:v", str(lvl)])
+    args.extend(["-b:v", str(vb), "-maxrate", str(maxr), "-bufsize", str(bufsize)])
+    if settings.vaapi_cbr:
+        args.extend(["-rc_mode", "2"])
+    args.extend(["-pix_fmt", "vaapi"])
+    return args
+
+
+def _build_libx264_args(settings: Settings, vb: int, maxr: int, bufsize: int) -> list[str]:
+    args: list[str] = ["-c:v", "libx264", "-profile:v", settings.h264_profile]
+    lvl = (settings.h264_level or "").strip()
+    if lvl:
+        args.extend(["-level:v", lvl])
+    tune = (settings.h264_tune or "").strip()
+    if tune:
+        args.extend(["-tune", tune])
+    args.extend(
+        [
+            "-preset",
+            settings.preset,
+            "-b:v",
+            str(vb),
+            "-maxrate",
+            str(maxr),
+            "-bufsize",
+            str(bufsize),
+            "-pix_fmt",
+            "yuv420p",
+        ]
+    )
+    return args
+
+
 def build_ffmpeg_command(
     input_path: Path,
     output_path: Path,
@@ -380,87 +432,11 @@ def build_ffmpeg_command(
     )
 
     if enc in ("h264_nvenc", "nvenc"):
-        cmd.extend(
-            [
-                "-c:v",
-                "h264_nvenc",
-                "-preset",
-                settings.nvenc_preset.strip() or "p1",
-            ]
-        )
-        prof = (settings.h264_profile or "").strip()
-        if prof:
-            cmd.extend(["-profile:v", prof])
-        lvl = (settings.h264_level or "").strip()
-        if lvl:
-            cmd.extend(["-level:v", lvl])
-        cmd.extend(
-            [
-                "-b:v",
-                str(vb),
-                "-maxrate",
-                str(maxr),
-                "-bufsize",
-                str(bufsize),
-                "-pix_fmt",
-                "yuv420p",
-            ]
-        )
+        cmd.extend(_build_nvenc_args(settings, vb, maxr, bufsize))
     elif enc in ("h264_vaapi", "vaapi"):
-        cmd.extend(["-c:v", "h264_vaapi"])
-        prof = _vaapi_h264_profile_id(settings)
-        if prof is not None:
-            cmd.extend(["-profile:v", str(prof)])
-        lvl = _vaapi_h264_level_id(settings.h264_level)
-        if lvl is not None:
-            cmd.extend(["-level:v", str(lvl)])
-        cmd.extend(
-            [
-                "-b:v",
-                str(vb),
-                "-maxrate",
-                str(maxr),
-                "-bufsize",
-                str(bufsize),
-            ]
-        )
-        if settings.vaapi_cbr:
-            cmd.extend(["-rc_mode", "2"])
-        cmd.extend(
-            [
-                "-pix_fmt",
-                "vaapi",
-            ]
-        )
+        cmd.extend(_build_vaapi_args(settings, vb, maxr, bufsize))
     elif enc == "libx264":
-        cmd.extend(
-            [
-                "-c:v",
-                "libx264",
-                "-profile:v",
-                settings.h264_profile,
-            ]
-        )
-        lvl = (settings.h264_level or "").strip()
-        if lvl:
-            cmd.extend(["-level:v", lvl])
-        tune = (settings.h264_tune or "").strip()
-        if tune:
-            cmd.extend(["-tune", tune])
-        cmd.extend(
-            [
-                "-preset",
-                settings.preset,
-                "-b:v",
-                str(vb),
-                "-maxrate",
-                str(maxr),
-                "-bufsize",
-                str(bufsize),
-                "-pix_fmt",
-                "yuv420p",
-            ]
-        )
+        cmd.extend(_build_libx264_args(settings, vb, maxr, bufsize))
     else:
         raise ValueError(
             f"Unknown video_encoder {enc!r}. Use libx264, h264_nvenc, nvenc, h264_vaapi, or vaapi."

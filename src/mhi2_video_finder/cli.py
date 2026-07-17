@@ -321,6 +321,141 @@ def cmd_get(
     typer.echo(str(out_path))
 
 
+def _prompt_source() -> str:
+    try:
+        return input("Source  [1] YouTube search  [2] Channel videos [1]: ").strip() or "1"
+    except EOFError:
+        raise typer.Abort() from None
+
+
+def _gather_interactive_rows(
+    s: Settings,
+    *,
+    src: str,
+    n: int | None,
+    mf: str | None,
+    template: str,
+    use_youtube_api: bool,
+) -> tuple[list[VideoCandidate], str]:
+    if src == "2":
+        try:
+            ch = input("Channel (@handle or full URL): ").strip()
+        except EOFError:
+            raise typer.Abort() from None
+        if not ch:
+            typer.echo("Channel required.", err=True)
+            raise typer.Exit(1)
+        typer.echo("Fetching videos…", err=True)
+        rows = list_channel_videos(ch, limit=n, match_filter=mf)
+        return rows, slug_dir_name(ch, "channel")
+
+    if use_youtube_api:
+        try:
+            q = input("Search query: ").strip()
+        except EOFError:
+            raise typer.Abort() from None
+        if not q:
+            typer.echo("Query required.", err=True)
+            raise typer.Exit(1)
+        try:
+            artist = input("Artist (optional, for template — Enter to skip): ").strip() or None
+            title = input("Song title (optional): ").strip() or None
+        except EOFError:
+            raise typer.Abort() from None
+        typer.echo("Searching (YouTube Data API)…", err=True)
+        _, rows = _gather_rows_cli(
+            s,
+            n=n,
+            mf=mf,
+            use_youtube_api=True,
+            query=q,
+            artist=artist,
+            title=title,
+            template=template,
+            channel_id=None,
+        )
+        return rows, slug_dir_name(q, "search")
+
+    try:
+        artist = input("Artist (optional — if set, uses music-video template): ").strip() or None
+        if artist:
+            title = input("Song / title (optional): ").strip() or None
+            q = ""
+        else:
+            q = input("Search query: ").strip()
+            title = None
+    except EOFError:
+        raise typer.Abort() from None
+    if artist:
+        typer.echo("Searching…", err=True)
+        _, rows = _gather_rows_cli(
+            s,
+            n=n,
+            mf=mf,
+            use_youtube_api=False,
+            query="",
+            artist=artist,
+            title=title,
+            template=template,
+            channel_id=None,
+        )
+        return rows, slug_dir_name(f"{artist} {title or ''}", "search")
+
+    if not q:
+        typer.echo("Search query or artist required.", err=True)
+        raise typer.Exit(1)
+    typer.echo("Searching…", err=True)
+    _, rows = _gather_rows_cli(
+        s,
+        n=n,
+        mf=mf,
+        use_youtube_api=False,
+        query=q,
+        artist=None,
+        title=None,
+        template=template,
+        channel_id=None,
+    )
+    return rows, slug_dir_name(q, "search")
+
+
+def _prompt_subdir(base_out: Path, subdir_default: str, *, subdir_opt: str | None, infer_subdir: bool) -> str:
+    if subdir_opt:
+        return subdir_opt
+    if infer_subdir:
+        return subdir_default
+    try:
+        prompt = f"Subfolder under {base_out} [{subdir_default}]: "
+        return input(prompt).strip() or subdir_default
+    except EOFError:
+        raise typer.Abort() from None
+
+
+def _run_interactive_batch(
+    s: Settings,
+    rows: list[VideoCandidate],
+    picked: list[int],
+    out_folder: Path,
+    *,
+    no_embed: bool,
+) -> None:
+    n_pick = len(picked)
+    for j, i in enumerate(picked, 1):
+        chosen = rows[i]
+        typer.echo(f"\n[{j}/{n_pick}] {chosen.title}\nDownloading…", err=True)
+        sys.stderr.flush()
+        raw, yinfo = download_to_cache(chosen.url, s.merged_raw_cache_dir())
+        stem = safe_stem(chosen.title, chosen.video_id)
+        out_path = unique_out_path(out_folder, stem, chosen.video_id)
+        typer.echo(f"Transcoding to {out_path.name} …", err=True)
+        sys.stderr.flush()
+        transcode(raw, out_path, s, ytdlp_info=None if no_embed else yinfo)
+        # One path per completed file on stdout (flush immediately for scripts / pipelines).
+        print(str(out_path.resolve()), flush=True)
+        typer.echo(f"Finished [{j}/{n_pick}]: {out_path.name}", err=True)
+        sys.stderr.flush()
+
+
 @app.command("interactive")
 def cmd_interactive(
     config: Path | None = settings_opt,
@@ -358,94 +493,10 @@ def cmd_interactive(
 
     typer.echo("Interactive mode — follow the prompts (empty line uses defaults where shown).\n")
 
-    try:
-        src = input("Source  [1] YouTube search  [2] Channel videos [1]: ").strip() or "1"
-    except EOFError:
-        raise typer.Abort() from None
-
-    rows: list[VideoCandidate] = []
-    subdir_default = "interactive"
-
-    if src == "2":
-        try:
-            ch = input("Channel (@handle or full URL): ").strip()
-        except EOFError:
-            raise typer.Abort() from None
-        if not ch:
-            typer.echo("Channel required.", err=True)
-            raise typer.Exit(1)
-        typer.echo("Fetching videos…", err=True)
-        rows = list_channel_videos(ch, limit=n, match_filter=mf)
-        subdir_default = slug_dir_name(ch, "channel")
-    else:
-        if use_youtube_api:
-            try:
-                q = input("Search query: ").strip()
-            except EOFError:
-                raise typer.Abort() from None
-            if not q:
-                typer.echo("Query required.", err=True)
-                raise typer.Exit(1)
-            try:
-                artist = input("Artist (optional, for template — Enter to skip): ").strip() or None
-                title = input("Song title (optional): ").strip() or None
-            except EOFError:
-                raise typer.Abort() from None
-            typer.echo("Searching (YouTube Data API)…", err=True)
-            _, rows = _gather_rows_cli(
-                s,
-                n=n,
-                mf=mf,
-                use_youtube_api=True,
-                query=q,
-                artist=artist,
-                title=title,
-                template=template,
-                channel_id=None,
-            )
-            subdir_default = slug_dir_name(q, "search")
-        else:
-            try:
-                artist = input("Artist (optional — if set, uses music-video template): ").strip() or None
-                if artist:
-                    title = input("Song / title (optional): ").strip() or None
-                    q = ""
-                else:
-                    q = input("Search query: ").strip()
-                    title = None
-            except EOFError:
-                raise typer.Abort() from None
-            if artist:
-                typer.echo("Searching…", err=True)
-                _, rows = _gather_rows_cli(
-                    s,
-                    n=n,
-                    mf=mf,
-                    use_youtube_api=False,
-                    query="",
-                    artist=artist,
-                    title=title,
-                    template=template,
-                    channel_id=None,
-                )
-                subdir_default = slug_dir_name(f"{artist} {title or ''}", "search")
-            else:
-                if not q:
-                    typer.echo("Search query or artist required.", err=True)
-                    raise typer.Exit(1)
-                typer.echo("Searching…", err=True)
-                _, rows = _gather_rows_cli(
-                    s,
-                    n=n,
-                    mf=mf,
-                    use_youtube_api=False,
-                    query=q,
-                    artist=None,
-                    title=None,
-                    template=template,
-                    channel_id=None,
-                )
-                subdir_default = slug_dir_name(q, "search")
+    src = _prompt_source()
+    rows, subdir_default = _gather_interactive_rows(
+        s, src=src, n=n, mf=mf, template=template, use_youtube_api=use_youtube_api
+    )
 
     if not rows:
         typer.echo("No results.", err=True)
@@ -463,34 +514,10 @@ def cmd_interactive(
         typer.echo("Cancelled.", err=True)
         raise typer.Abort()
 
-    folder_name = subdir
-    if not folder_name:
-        if infer_subdir:
-            folder_name = subdir_default
-        else:
-            try:
-                prompt = f"Subfolder under {base_out} [{subdir_default}]: "
-                folder_name = input(prompt).strip() or subdir_default
-            except EOFError:
-                raise typer.Abort() from None
-
+    folder_name = _prompt_subdir(base_out, subdir_default, subdir_opt=subdir, infer_subdir=infer_subdir)
     out_folder = ensure_and_print_output_dir(base_out / folder_name)
 
-    n_pick = len(picked)
-    for j, i in enumerate(picked, 1):
-        chosen = rows[i]
-        typer.echo(f"\n[{j}/{n_pick}] {chosen.title}\nDownloading…", err=True)
-        sys.stderr.flush()
-        raw, yinfo = download_to_cache(chosen.url, s.merged_raw_cache_dir())
-        stem = safe_stem(chosen.title, chosen.video_id)
-        out_path = unique_out_path(out_folder, stem, chosen.video_id)
-        typer.echo(f"Transcoding to {out_path.name} …", err=True)
-        sys.stderr.flush()
-        transcode(raw, out_path, s, ytdlp_info=None if no_embed else yinfo)
-        # One path per completed file on stdout (flush immediately for scripts / pipelines).
-        print(str(out_path.resolve()), flush=True)
-        typer.echo(f"Finished [{j}/{n_pick}]: {out_path.name}", err=True)
-        sys.stderr.flush()
+    _run_interactive_batch(s, rows, picked, out_folder, no_embed=no_embed)
 
 
 if __name__ == "__main__":
