@@ -51,7 +51,6 @@ from .workers import (
 
 
 class MainWindow(
-    QMainWindow,
     WindowGeometryMixin,
     StatusBarMixin,
     SettingsMixin,
@@ -61,6 +60,7 @@ class MainWindow(
     LibraryAIMixin,
     ConvertAIMixin,
     JobQueueMixin,
+    QMainWindow,
 ):
     def __init__(self, *, config_path: Path | None = None) -> None:
         super().__init__()
