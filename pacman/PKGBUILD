@@ -1,5 +1,5 @@
 pkgname=mhi2-video-finder
-pkgver=0.14.2
+pkgver=0.15.0
 pkgrel=1
 pkgdesc="YouTube music-video search, download (yt-dlp), and MHI2-oriented MP4 transcode"
 arch=('any')
