@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import QMessageBox
 
-from mhi2_video_finder.config import default_config_path, load_settings, save_settings
+from mhi2_video_finder.config import DEFAULT_GROQ_MODEL, default_config_path, load_settings, save_settings
 
 # Stored in QComboBox userData; must match config ``video_encoder`` values.
 _ENCODER_CHOICES: tuple[tuple[str, str], ...] = (
@@ -68,7 +68,7 @@ class SettingsMixin:
 
         self.ui_groq_enabled.setChecked(self._settings.groq_enabled)
         self.ui_groq_api_key.setText((self._settings.groq_api_key or "").strip())
-        self.ui_groq_model.setText((self._settings.groq_model or "").strip() or "llama-3.1-8b-instant")
+        self.ui_groq_model.setText((self._settings.groq_model or "").strip() or DEFAULT_GROQ_MODEL)
         self.ui_groq_base_url.setText((self._settings.groq_base_url or "").strip())
         self.ui_groq_temperature.setValue(float(self._settings.groq_temperature))
 
@@ -121,7 +121,7 @@ class SettingsMixin:
         self._settings.groq_enabled = self.ui_groq_enabled.isChecked()
         ga = self.ui_groq_api_key.text().strip()
         self._settings.groq_api_key = ga if ga else None
-        self._settings.groq_model = self.ui_groq_model.text().strip() or "llama-3.1-8b-instant"
+        self._settings.groq_model = self.ui_groq_model.text().strip() or DEFAULT_GROQ_MODEL
         self._settings.groq_base_url = (
             self.ui_groq_base_url.text().strip() or "https://api.groq.com/openai/v1"
         )

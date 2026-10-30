@@ -1,3 +1,3 @@
 """YouTube music-video search, download, and MHI2-oriented transcode."""
 
-__version__ = "0.15.1"
+__version__ = "0.16.0"

@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import QTableWidgetItem
 from mhi2_video_finder.config import save_settings
 from mhi2_video_finder.local_library import LibraryFileRow
 
+from .assisted_guess import AssistedGuessDialog
 from .tab_builders import (
     _LIB_COL_ARTIST,
     _LIB_COL_CHECK,
@@ -381,6 +382,33 @@ class LibraryAIMixin:
             skip_if_tagged=self.library_skip_tagged_cb.isChecked(),
             mp4_compat_mode=self.library_mp4_compat_cb.isChecked(),
         )
+
+    def _library_start_assisted_guess(self) -> None:
+        checked = self._library_checked_row_indices()
+        if not checked:
+            self._show_status_message("Check one or more rows first.", kind="info")
+            return
+        self._sync_widgets_to_settings()
+        key = (self._settings.groq_api_key or "").strip()
+        if not key:
+            self._show_status_message(
+                "Add your API key under Settings → AI assistant (or set GROQ_API_KEY).",
+                kind="info",
+            )
+            return
+        if self._library_infer_batch_in_progress():
+            self._show_status_message("Already asking the AI — one moment.", kind="info")
+            return
+        if self._library_apply_save_worker is not None:
+            self._show_status_message("Another save is still in progress.", kind="info")
+            return
+        if self._library_bulk_rename_worker is not None:
+            self._show_status_message("Bulk rename is already in progress.", kind="info")
+            return
+        if self._library_bulk_clear_metadata_worker is not None:
+            self._show_status_message("Bulk metadata clear is already in progress.", kind="info")
+            return
+        AssistedGuessDialog(self, checked, parent=self).exec()
 
     def _library_infer_batch_in_progress(self) -> bool:
         return self._library_infer_total > 0 and self._library_infer_done < self._library_infer_total

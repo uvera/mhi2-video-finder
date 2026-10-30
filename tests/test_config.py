@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from mhi2_video_finder.config import (
+    DEFAULT_GROQ_MODEL,
     Settings,
     _build_libx264_args,
     _build_nvenc_args,
@@ -208,6 +209,28 @@ def test_save_settings_merges_unknown_keys(tmp_path: Path) -> None:
     s2 = load_settings(cfg)
     assert s2.max_parallel_downloads == 2
     assert s2.ffmpeg_nice == 10
+
+
+def test_save_settings_roundtrips_multiline_assisted_prompt(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.toml"
+    prompt = "Line one.\nLine two.\tTabbed\r\n"
+    s = Settings(
+        library_assisted_prompt=prompt,
+        library_assisted_rename_template="{artist} - {song}",
+    )
+    save_settings(s, cfg)
+    text = cfg.read_text(encoding="utf-8")
+    assert "\nLine two." not in text
+    loaded = load_settings(cfg)
+    assert loaded.library_assisted_prompt == prompt
+    assert loaded.library_assisted_rename_template == "{artist} - {song}"
+
+
+def test_load_settings_replaces_retired_groq_model(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('groq_model = "llama-3.1-8b-instant"\n', encoding="utf-8")
+    loaded = load_settings(cfg)
+    assert loaded.groq_model == DEFAULT_GROQ_MODEL
 
 
 def test_load_settings_mp4_compat_mode_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -29,6 +29,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from mhi2_video_finder.config import DEFAULT_GROQ_MODEL
+
 from .settings_mixin import _ENCODER_CHOICES
 from .styles import (
     DIAGNOSTICS_IDLE_STYLE,
@@ -305,7 +307,7 @@ class TabBuildersMixin:
         gg.addWidget(self.ui_groq_api_key, 1, 1)
         gg.addWidget(QLabel("Model:"), 2, 0)
         self.ui_groq_model = QLineEdit()
-        self.ui_groq_model.setPlaceholderText("llama-3.1-8b-instant")
+        self.ui_groq_model.setPlaceholderText(DEFAULT_GROQ_MODEL)
         gg.addWidget(self.ui_groq_model, 2, 1)
         gg.addWidget(QLabel("Base URL:"), 3, 0)
         self.ui_groq_base_url = QLineEdit()
@@ -712,6 +714,13 @@ class TabBuildersMixin:
         )
         self.library_bulk_infer_btn.clicked.connect(self._library_infer_checked_groq)
         btn_row.addWidget(self.library_bulk_infer_btn)
+        self.library_assisted_guess_btn = QPushButton("Assisted guess…")
+        self.library_assisted_guess_btn.setToolTip(
+            "Walk through checked videos one at a time. Set the AI prompt and a filename "
+            "pattern such as {song} - {artist}, then accept or skip each guess before it is saved."
+        )
+        self.library_assisted_guess_btn.clicked.connect(self._library_start_assisted_guess)
+        btn_row.addWidget(self.library_assisted_guess_btn)
         self.library_infer_btn = QPushButton("Guess artist & song")
         self.library_infer_btn.setToolTip(
             "Fill Artist and Song using Groq from the file name and media info, then save tags to the file. "
@@ -756,7 +765,8 @@ class TabBuildersMixin:
         lib_hint = QLabel(
             "Pick a folder and choose Find all videos. Click a row to load details, then edit by hand, "
             "or use Guess artist & song / Guess selected — inferred tags are written to each file right away "
-            "(same as Save). Configure the AI under Settings → AI assistant (or set GROQ_API_KEY)."
+            "(same as Save). Assisted guess… reviews each checked file before saving it. "
+            "Configure the AI under Settings → AI assistant (or set GROQ_API_KEY)."
         )
         lib_hint.setWordWrap(True)
         lib_hint.setStyleSheet(HINT_LABEL_STYLE)

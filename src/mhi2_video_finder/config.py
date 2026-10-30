@@ -29,6 +29,11 @@ def _env_key(name: str) -> str:
     return f"MHI2_VIDEO_FINDER_{name.upper()}"
 
 
+# Groq removed llama-3.1-8b-instant. This id is on the public model list.
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
+_RETIRED_GROQ_MODELS = frozenset({"llama-3.1-8b-instant"})
+
+
 def _fps_to_str(val: Any) -> str:
     if isinstance(val, bool):
         raise TypeError("fps must be number or string")
@@ -148,10 +153,13 @@ class Settings:
     library_skip_bulk_infer_if_tagged: bool = False
     # Guess selected: title-only AI mode for MP4 compatibility (leave artist empty).
     library_bulk_infer_mp4_compat_mode: bool = False
+    # Assisted guess: empty prompt means the built-in Groq system prompt.
+    library_assisted_prompt: str = ""
+    library_assisted_rename_template: str = "{song} - {artist}"
     # Groq (OpenAI-compatible) for metadata inference.
     groq_enabled: bool = False
     groq_api_key: str | None = None
-    groq_model: str = "llama-3.1-8b-instant"
+    groq_model: str = DEFAULT_GROQ_MODEL
     groq_base_url: str = "https://api.groq.com/openai/v1"
     groq_temperature: float = 0.2
 
@@ -222,13 +230,22 @@ def load_settings(path: Path | None = None) -> Settings:
     if s.groq_api_key is None:
         s.groq_api_key = os.environ.get("GROQ_API_KEY")
 
+    if (s.groq_model or "").strip() in _RETIRED_GROQ_MODELS:
+        s.groq_model = DEFAULT_GROQ_MODEL
+
     s.fps = _fps_to_str(s.fps)
 
     return s
 
 
 def _toml_escape_string(s: str) -> str:
-    return s.replace("\\", "\\\\").replace('"', '\\"')
+    return (
+        s.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+    )
 
 
 def _format_toml_scalar(val: Any) -> str:

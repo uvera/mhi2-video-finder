@@ -4,40 +4,59 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 import httpx
 
-from mhi2_video_finder.config import Settings
+from mhi2_video_finder.config import DEFAULT_GROQ_MODEL, Settings
 
 
 class GroqInferenceError(Exception):
     """API or parse failure."""
 
 
-_SYSTEM_PROMPT = """You help identify music video files. Given a filename, optional folder/path hint, \
-and technical media summary, \
-infer the performing artist and song title. Respond with a single JSON object only, no markdown, with keys:
-"author" (string) and "song_name" (string). Use empty string if unknown. Do not include other keys.
-CRITICAL CONSTRAINT: For "author" and "song_name", only use words/tokens that already exist in the filename.
-Do not invent, correct, translate, or expand words beyond the filename tokens.
-You may reorder filename tokens, and you may omit tokens.
-You may use spaces and punctuation for formatting, but every alphanumeric token in output must be \
-from the filename.
-If no reliable answer can be formed from filename tokens alone, return empty string."""
+_SYSTEM_PROMPT = (
+    "You help identify music video files. Given a filename, optional folder hint, and a "
+    "technical media summary, infer the performing artist and the song title.\n"
+    'Respond with a single JSON object only, no markdown, with keys "author" and '
+    '"song_name". Use an empty string if unknown. Do not include other keys.\n'
+    "Use only words that already appear in the filename. You may change capitalization "
+    "and punctuation, and you may drop words. Do not add words that are not in the filename.\n"
+    "The artist is the performer named in the filename, not a channel, uploader, or folder name.\n"
+    "When the filename repeats the same title in Latin letters and another script, "
+    "keep the Latin version only.\n"
+    "Drop a trailing year and words such as official, video, lyrics, or audio.\n"
+    "Do not copy the whole filename into either field.\n"
+    "Example shape, not a real title: "
+    '"PERFORMER - SONG_ WORDS _ [same title in another script]_ YEAR.mp4" '
+    'becomes {"author": "Performer", "song_name": "Song, words"}. '
+    "Use words from the file you were given, not from this example."
+)
+
+DEFAULT_SYSTEM_PROMPT = _SYSTEM_PROMPT
+# Saved prompts from the previous built-in text. Those told the model not to change case or punctuation.
+LEGACY_SYSTEM_PROMPT_MARKER = (
+    "Do not invent, correct, translate, or expand words beyond the filename tokens."
+)
+
+
+# Letters and digits in any script. Underscore stays a separator, as in "SONG_ WORDS".
+_WORD = re.compile(r"[^\W_]+", re.UNICODE)
 
 
 def _filename_tokens(filename: str) -> set[str]:
-    return {m.group(0).lower() for m in re.finditer(r"[A-Za-z0-9]+", filename or "")}
+    stem = Path(filename).stem if filename else ""
+    return {m.group(0).casefold() for m in _WORD.finditer(stem)}
 
 
 def _restrict_to_filename_tokens(value: str, allowed_tokens: set[str]) -> str:
-    """Keep only alnum tokens that already appear in filename."""
-    parts = re.findall(r"[A-Za-z0-9]+|[^A-Za-z0-9]+", value or "")
+    """Keep only words that already appear in the filename. Punctuation may change."""
+    parts = re.findall(r"[^\W_]+|(?:[^\w]|_)+", value or "", flags=re.UNICODE)
     kept: list[str] = []
     for part in parts:
-        if re.fullmatch(r"[A-Za-z0-9]+", part):
-            if part.lower() in allowed_tokens:
+        if _WORD.fullmatch(part):
+            if part.casefold() in allowed_tokens:
                 kept.append(part)
         else:
             # Keep separators only between kept tokens.
@@ -77,15 +96,20 @@ def infer_author_song(
     folder_hint: str = "",
     probe_summary: str,
     timeout: float = 60.0,
+    system_prompt: str | None = None,
 ) -> tuple[str, str]:
-    """Call Groq chat completions; return (author, song_name)."""
+    """Call Groq chat completions; return (author, song_name).
+
+    ``system_prompt`` replaces the built-in system prompt when non-empty.
+    Artist and song are still limited to tokens that appear in ``filename``.
+    """
     key = (settings.groq_api_key or "").strip()
     if not key:
         raise GroqInferenceError("Groq API key is not set (config or GROQ_API_KEY)")
     base = (settings.groq_base_url or "").strip().rstrip("/")
     if not base:
         raise GroqInferenceError("groq_base_url is empty")
-    model = (settings.groq_model or "").strip() or "llama-3.1-8b-instant"
+    model = (settings.groq_model or "").strip() or DEFAULT_GROQ_MODEL
     url = f"{base}/chat/completions"
 
     hint = (folder_hint or "").strip()
@@ -96,8 +120,9 @@ def infer_author_song(
         user_msg += f"folder_hint: {hint}\n"
     user_msg += f"\nffprobe_summary:\n{probe_summary or '(none)'}\n"
 
+    prompt = (system_prompt if system_prompt is not None else "").strip() or DEFAULT_SYSTEM_PROMPT
     messages = [
-        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "system", "content": prompt},
         {"role": "user", "content": user_msg},
     ]
     payload: dict[str, Any] = {

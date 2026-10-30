@@ -545,6 +545,7 @@ class GroqInferWorker(QThread):
         path: Path | None,
         probe_summary: str,
         skip_if_existing_tags: bool = False,
+        system_prompt: str | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -555,6 +556,7 @@ class GroqInferWorker(QThread):
         self._path = path
         self._probe_summary = (probe_summary or "").strip()
         self._skip_if_existing_tags = skip_if_existing_tags
+        self._system_prompt = system_prompt
 
     def run(self) -> None:
         try:
@@ -596,6 +598,7 @@ class GroqInferWorker(QThread):
                 filename=self._filename,
                 folder_hint=self._folder_hint,
                 probe_summary=summary,
+                system_prompt=self._system_prompt,
             )
             self.finished_ok.emit(author, song)
         except GroqInferenceError as e:

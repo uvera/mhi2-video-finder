@@ -39,7 +39,7 @@ def _is_placeholder_title_for_stem(title: str) -> bool:
 
 def safe_stem(title: str, fallback: str) -> str:
     base = "" if _is_placeholder_title_for_stem(title) else title
-    s = "".join(c if c.isalnum() or c in " -_." else "_" for c in base)[:120]
+    s = "".join(c if c.isalnum() or c in " -_.," else "_" for c in base)[:120]
     s = s.strip() or fallback
     return s
 
