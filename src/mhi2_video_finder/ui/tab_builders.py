@@ -721,6 +721,13 @@ class TabBuildersMixin:
         )
         self.library_assisted_guess_btn.clicked.connect(self._library_start_assisted_guess)
         btn_row.addWidget(self.library_assisted_guess_btn)
+        self.library_cyrillic_remap_btn = QPushButton("Remap Cyrillic…")
+        self.library_cyrillic_remap_btn.setToolTip(
+            "Walk through checked videos and rewrite Cyrillic artist, song, and file name into Latin. "
+            "You can edit each one before it is saved."
+        )
+        self.library_cyrillic_remap_btn.clicked.connect(self._library_start_cyrillic_remap)
+        btn_row.addWidget(self.library_cyrillic_remap_btn)
         self.library_infer_btn = QPushButton("Guess artist & song")
         self.library_infer_btn.setToolTip(
             "Fill Artist and Song using Groq from the file name and media info, then save tags to the file. "
@@ -766,6 +773,7 @@ class TabBuildersMixin:
             "Pick a folder and choose Find all videos. Click a row to load details, then edit by hand, "
             "or use Guess artist & song / Guess selected — inferred tags are written to each file right away "
             "(same as Save). Assisted guess… reviews each checked file before saving it. "
+            "Remap Cyrillic… rewrites Serbian, Bulgarian, and Russian letters to Latin the same way. "
             "Configure the AI under Settings → AI assistant (or set GROQ_API_KEY)."
         )
         lib_hint.setWordWrap(True)
